@@ -1,0 +1,18 @@
+[package]
+name = "ex_args"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[profile.dev]
+overflow-checks = false     # Disable integer overflow checks.
+panic = "abort"
+
+[profile.release]
+overflow-checks = false     # Disable integer overflow checks.
+panic = "abort"
+# opt-level = 0
+
+[dependencies]
+cortex-m-semihosting = "0.5"
