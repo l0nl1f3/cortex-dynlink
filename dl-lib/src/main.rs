@@ -84,7 +84,7 @@ fn main() -> ! {
     loop {}
 }
 
-// 内存分配错误处理
+// Out of memory
 #[alloc_error_handler]
 fn alloc_error(_layout: Layout) -> ! {
     asm::bkpt();
