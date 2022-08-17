@@ -9,29 +9,6 @@ pub const ASM_SUF:&str = "
     .end
 ";
 
-pub const ASM_REPEAT_TMPL:&str = "
-.thumb_func
-.align 1
-.globl {s}
-.type {s}, %function
-.extern {actname}
-.type {actname}, %function
-{s}:
-push    {r9, lr}
-push    {r0, r1}
-mov     r1, #0x1c
-ldr     r1, [r1]
-mov     r0, pc
-blx     r1
-mov     r9, r0
-pop     {r0, r1}
-bl      {actname}
-pop     {r9, pc}
-
-.size   {s}, . - {s}
-";
-
-
 pub const FUNPRE:&str = "
 .thumb_func
 .align 1

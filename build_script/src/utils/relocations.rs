@@ -10,7 +10,8 @@ pub enum RelocationType {
     MOVW_BREL_NC,
     MOVT_BREL,
     CALL,
-    ABS32
+    ABS32,
+    NONE
 }
 
 fn get_relocation_type(r_type: u32) -> RelocationType {
@@ -19,7 +20,7 @@ fn get_relocation_type(r_type: u32) -> RelocationType {
         88 => RelocationType::MOVT_BREL,
         10 => RelocationType::CALL,
         2 => RelocationType::ABS32,
-        _ =>  RelocationType::MOVT_BREL,
+        _ =>  RelocationType::NONE,
         // panic!("Unknown relocation type")
     }
 }
@@ -33,6 +34,7 @@ pub struct Relocation {
     pub name: String,
 }
 
+// get relocation entries and extract some necessary information from file obj
 pub fn get_relocations(obj:&String) -> Result<Vec<Relocation>, Box<dyn Error> > {
   let file = fs::File::open(obj)?;
   let data = match unsafe { memmap2::Mmap::map(&file) } {
