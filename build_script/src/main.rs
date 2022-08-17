@@ -119,8 +119,6 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
 
     // switch to low-level read api, something not right in the unified read.
     let vec_relocations: Vec<relocations::Relocation> = relocations::get_relocations(obj).unwrap();
-
-    // println!("{:#?}", vec_relocations);
     let mut names: HashMap<String, u32> = HashMap::new();
     let mut num_relocs = 0;
     for reloc in &vec_relocations {
@@ -171,18 +169,22 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
         }
         if let SymbolType::External | SymbolType::Exported = symbol_types[sym] {
             sym_table_len += sym.len() + 1;
-            // sym_table_idx.insert(sym.clone(), i as i32);
         }
         sym_table_idx.insert(sym.clone(), i as i32);
     }
+    // align to 4 bytes
     sym_table_len += 3;
     sym_table_len -= sym_table_len % 4;
 
-    // println!("{:#?}", sym_table_len);
-    image.extend_from_slice(&sym_table_len.to_le_bytes()[0..4]); // symbol tabel size
-    image.extend_from_slice(&code_section.data().unwrap().len().to_le_bytes()[0..4]); // code size
-    image.extend_from_slice(&data_section.data().unwrap().len().to_le_bytes()[0..4]); // data size
-    image.extend_from_slice(&bss_section.data().unwrap().len().to_le_bytes()[0..4]); // bss size
+    // raw symbol tabel size
+    image.extend_from_slice(&sym_table_len.to_le_bytes()[0..4]); 
+    // code size
+    image.extend_from_slice(&code_section.data().unwrap().len().to_le_bytes()[0..4]); 
+    // data size
+    image.extend_from_slice(&data_section.data().unwrap().len().to_le_bytes()[0..4]); 
+    // bss size
+    image.extend_from_slice(&bss_section.data().unwrap().len().to_le_bytes()[0..4]); 
+    // symbol number
     image.extend_from_slice(&sym_table.len().to_le_bytes()[0..4]);
 
     let mut hash_set: HashSet<String> = HashSet::new();
@@ -275,15 +277,14 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+// Statically link the raw_objects[] into single dynamic library.
 fn main() {
     let mut objs: Vec<String> = Vec::new();
     let raw_objs: Vec<String> = vec![String::from("module.o")];
-    // let raw_objs: Vec<String> = vec![String::from("global-variable-0.o"), String::from("global-variable-1.o")];
     let mut gfuncs = Vec::new();
     for obj in &raw_objs {
         let funcs = redefine_symbols(obj);
         gfuncs.extend_from_slice(&funcs);
-        // objs.push(obj.to_string());
     }
     for obj in &raw_objs {
         objs.push(obj.replace(".o", ".1.o"));
@@ -291,9 +292,6 @@ fn main() {
     for obj in &raw_objs {
         objs.push(obj.replace(".o", ".2.o"));
     }
-
-    // println!("{:#?}", symbols);
-    // println!("{}", objs.join(" "));
 
     link_objects(&objs);
     process_binary(&String::from("out.elf"), gfuncs);
