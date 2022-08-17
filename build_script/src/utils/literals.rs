@@ -1,15 +1,15 @@
-pub const ASM_PRE:&str = "    .syntax unified
+pub const ASM_PRE: &str = "    .syntax unified
     .arch armv7-m
 
     .text
     .thumb
 ";
-pub const ASM_SUF:&str = "
+pub const ASM_SUF: &str = "
     
     .end
 ";
 
-pub const FUNPRE:&str = "
+pub const FUNPRE: &str = "
 .thumb_func
 .align 1
 .globl {s}
@@ -24,7 +24,7 @@ b {modulename}
 .size {s}, . - {s}
 ";
 
-pub const OBJPRE:&str = "
+pub const OBJPRE: &str = "
 .thumb_func
 .align 1
 .globl {s}

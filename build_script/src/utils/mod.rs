@@ -1,4 +1,4 @@
-pub mod readelf;
 pub mod literals;
-pub mod symbols;
+pub mod readelf;
 pub mod relocations;
+pub mod symbols;
