@@ -2,7 +2,6 @@
 
 rustflags = [
   "-C", "link-arg=--nmagic",
-  
   # "-C", "relocation-model=ropi-rwpi",
   # "-C", "link-arg=-nostartfiles",
   "-C", "link-arg=-Tlink.ld",
@@ -14,5 +13,6 @@ rustflags = [
 target = "thumbv7em-none-eabi"
 
 [target.thumbv7em-none-eabi]
-# runner = "/home/zhouyi/.local/xPacks/@xpack-dev-tools/qemu-arm/7.0.0-1.1/.content/bin/qemu-system-gnuarmeclipse --board STM32F4-Discovery -nographic -semihosting-config enable=on,target=native -kernel"
-runner = "/home/zhouyi/.local/xPacks/@xpack-dev-tools/qemu-arm/7.0.0-1.1/.content/bin/qemu-system-gnuarmeclipse --board STM32F4-Discovery -nographic -semihosting-config enable=on,target=native -S -gdb tcp::3333 -kernel"
+runner = "/home/zhouyi/.local/xPacks/@xpack-dev-tools/qemu-arm/7.0.0-1.1/.content/bin/qemu-system-gnuarmeclipse --board STM32F4-Discovery -nographic -semihosting-config enable=on,target=native -kernel"
+# Switch to enable GDB
+# runner = "/home/zhouyi/.local/xPacks/@xpack-dev-tools/qemu-arm/7.0.0-1.1/.content/bin/qemu-system-gnuarmeclipse --board STM32F4-Discovery -nographic -semihosting-config enable=on,target=native -S -gdb tcp::3333 -kernel"
