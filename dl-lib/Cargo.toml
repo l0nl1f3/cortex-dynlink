@@ -1,0 +1,21 @@
+[package]
+name = "dl-lib"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+cortex-m-rt = "0.6.10"
+cortex-m-semihosting = "0.5"
+panic-halt = "0.2.0"
+alloc-cortex-m = "0.4.2"
+
+[dependencies.cortex-m]
+features = ["inline-asm"]
+version = "0.7"
+
+[dependencies.lazy_static]
+features = ["spin_no_std"]
+version = "1.4.0"
