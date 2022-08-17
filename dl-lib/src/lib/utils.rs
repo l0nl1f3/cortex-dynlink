@@ -138,10 +138,9 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
                 // Resolve exported symbol
                 if o1 < header.n_table.into() {
                     // symbol is a variable
-                    let loc = o1 * 4;
                     let idx = s.index;
                     for j in 0..4 {
-                        code[loc + j] = data[idx + j];
+                        code[idx + j] = data[idx + j];
                     }
                 } else {
                     // symbol is a function
@@ -160,8 +159,6 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
                         let symbol = dependency.get_symbol(&s.s_name);
                         if let Some(symbol) = symbol {
                             let data = symbol.index.to_le_bytes();
-                            dbg!(&symbol);
-                            dbg!(o1);
                             for j in 0..4 {
                                 code[text_begin + o1 + j] = data[j];
                             }
