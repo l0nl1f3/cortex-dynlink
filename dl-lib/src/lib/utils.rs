@@ -93,6 +93,7 @@ fn modify(slice: &mut [u8], v: u16) {
 
 // load module from buf
 // for external symbols, dependencies are assume to have their definition
+// dependencies=none indicates no external symbol
 pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     let header_prefix = &buf[..HEADER_LEN];
     let p = header_prefix.as_ptr() as *const [u8; HEADER_LEN];
