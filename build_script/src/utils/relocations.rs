@@ -1,3 +1,4 @@
+use object::elf;
 use object::elf::FileHeader32;
 use object::read::elf::{FileHeader, Rel, SectionHeader, Sym};
 use object::Endianness;
@@ -47,9 +48,9 @@ pub fn get_relocations(obj: &String) -> Result<Vec<Relocation>, Box<dyn Error>> 
     let endian = elf.endian()?;
     let sections = elf.sections(endian, &*data)?;
     let mut vec_relocations: Vec<Relocation> = Vec::new();
-    for (index, section) in sections.iter().enumerate() {
+    for (_index, section) in sections.iter().enumerate() {
         // println!("{:?} {:?}", index, section);
-        if let SHT_REL = section.sh_type(endian) {
+        if let elf::SHT_REL = section.sh_type(endian) {
             let relocations = section.rel(endian, &*data)?;
             if let None = relocations {
                 continue;
@@ -61,27 +62,16 @@ pub fn get_relocations(obj: &String) -> Result<Vec<Relocation>, Box<dyn Error>> 
                 let r_type = get_relocation_type(relocation.r_type(endian));
                 let r_info = relocation.r_info(endian);
                 let sym = relocation.r_sym(endian);
-                let name = symbols
+                let (name, value) = symbols
                     .and_then(|symbols| {
                         symbols
                             .symbol(sym as usize)
-                            .and_then(|symbol| symbol.name(endian, symbols.strings()))
-                    })
-                    .unwrap()
-                    .to_vec();
-                let name = String::from_utf8(name).unwrap();
-
-                let value = symbols
-                    .and_then(|symbols| {
-                        symbols
-                            .symbol(sym as usize)
-                            .and_then(|symbol| Ok(symbol.st_value(endian)))
+                            .and_then(|symbol| Ok((symbol.name(endian, symbols.strings()), symbol.st_value(endian))))
                     })
                     .unwrap();
-                // print_rel_symbol(p, endian, symbols, sym);
-                // print_type_of(&name);
+                
+                    let name = String::from_utf8(name.unwrap().to_vec()).unwrap();
 
-                // println!("{}, offset={}, type={:?}, value={}", name, r_offset, r_type, value);
                 if !name.ends_with("module") {
                     vec_relocations.push(Relocation {
                         r_offset,
