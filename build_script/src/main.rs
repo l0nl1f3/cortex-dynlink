@@ -121,7 +121,7 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
     // Relocation Table: process global variables
     for reloc in &vec_relocations {
         if let RelocationType::MOVT_BREL | RelocationType::MOVW_BREL_NC = reloc.r_type {
-            // every global variable is multiple pair of MOVW and MOVT, only keep one
+            // global variable: multiple pair of MOVW and MOVT, only keep one
             if names.contains_key(&reloc.name) {
                 continue;
             }
@@ -133,7 +133,7 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
     // Relocation Table: process global functions
     for reloc in &vec_relocations {
         if let RelocationType::ABS32 = reloc.r_type {
-            // every function call is a ABS32, keep all
+            // function call: 1 ABS32, keep all
             let offset = reloc.r_offset;
             names.insert(reloc.name.clone(), offset.into());
             num_relocs += 1;
