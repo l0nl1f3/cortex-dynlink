@@ -14,13 +14,11 @@ fn wrap_name(func: &str) -> String {
     format!("__{}__{}", name_prefix_8, func)
 }
 
-// generate interposition for functions
-fn redefine_symbols(obj: &String) -> Vec<String> {
+// Generate interposition: asm.s -> $obj_pre.o
+fn add_prefix(obj: &String) -> Vec<String> {
     let module_name = "module"; //
     let pub_funcs = readelf::get_pub_funcs(&obj).unwrap();
     // println!("{:?}", pub_funcs);
-    let obj_1: String = obj.replace(".o", ".1.o");
-    let mut rename_cmd: String = String::from("llvm-objcopy");
     let mut asm_repeat_body = String::from("");
     for func in &pub_funcs {
         let mut repeat = String::from(literals::FUNPRE);
@@ -41,26 +39,21 @@ fn redefine_symbols(obj: &String) -> Vec<String> {
         literals::ASM_SUF
     );
     fs::write("asm.s", asm).unwrap();
-    let obj_2 = obj.replace(".o", ".2.o");
+    let obj_2 = obj.replace(".o", "_pre.o");
     let mut assemble_cmd = String::from(literals::ASM_CMD);
     assemble_cmd = assemble_cmd
         .replace("{asm}", "asm.s")
         .replace("{elf}", &obj_2);
 
-    rename_cmd = format!("{} {} {}", rename_cmd, obj, obj_1);
-
-    let out1 = Command::new("bash")
-        .arg("-c")
-        .arg(rename_cmd)
-        .output()
-        .unwrap();
-    let out2 = Command::new("bash")
+    let output = Command::new("bash")
         .arg("-c")
         .arg(assemble_cmd)
         .output()
         .unwrap();
-    println!("REN: {:?}", out1);
-    println!("ASM: {:?}", out2);
+    if !output.status.success() {
+        panic!("Assembler failed!");
+    }
+    println!("ASM: {:?}", output);
     pub_funcs
 }
 
@@ -77,6 +70,9 @@ fn link_objects(objs: &Vec<String>) {
         .arg(link_cmd)
         .output()
         .unwrap();
+    if !output.status.success() {
+        panic!("Linker failed!");
+    }
     println!("LNK: {:?}", output);
 }
 
@@ -92,25 +88,26 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
     let mut symbol_types: HashMap<String, SymbolType> = HashMap::new();
     let mut symbol_sections: HashMap<String, SectionIndex> = HashMap::new();
     let mut symbol_addresses: HashMap<String, u64> = HashMap::new();
+
+    // get symbol type (Exported, External, Local, None), section index, and address
     for symbol in symbols {
         let name = String::from(symbol.name().unwrap());
-        if name.is_empty()
+        if name.is_empty() // exclude symbol associate with section (STT_SECTION)
             || name.starts_with("$t")
-            || name.starts_with("$d")
-            || name.ends_with("module")
+            || name.starts_with("$d")  
+            || name.ends_with("module") // exclude symbol "module" 
         {
             continue;
         }
         let symbol_type = match (symbol.is_global(), symbol.is_undefined(), symbol.kind()) {
             (true, false, _) => Some(SymbolType::Exported),
             (true, _, _) => Some(SymbolType::External),
-            (_, _, object::SymbolKind::File) => None,
+            (_, _, object::SymbolKind::File) => None, 
             (_, _, _) => Some(SymbolType::Local),
         };
-
         if let Some(symbol_type) = symbol_type {
             symbol_types.insert(name.clone(), symbol_type);
-        }
+        } 
         if let Some(section_index) = symbol.section_index() {
             symbol_sections.insert(name.clone(), section_index);
         }
@@ -119,10 +116,12 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
 
     // switch to low-level read api, something not right in the unified read.
     let vec_relocations: Vec<relocations::Relocation> = relocations::get_relocations(obj).unwrap();
-    let mut names: HashMap<String, u32> = HashMap::new();
+    let mut names: HashMap<String, u32> = HashMap::new(); // symbol name -> symbol index in relocation table
     let mut num_relocs = 0;
+    // Relocation Table: process global variables
     for reloc in &vec_relocations {
         if let RelocationType::MOVT_BREL | RelocationType::MOVW_BREL_NC = reloc.r_type {
+            // every global variable is multiple pair of MOVW and MOVT, only keep one
             if names.contains_key(&reloc.name) {
                 continue;
             }
@@ -131,8 +130,10 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
         }
     }
     let num_table = num_relocs;
+    // Relocation Table: process global functions
     for reloc in &vec_relocations {
         if let RelocationType::ABS32 = reloc.r_type {
+            // every function call is a ABS32, keep all
             let offset = reloc.r_offset;
             names.insert(reloc.name.clone(), offset.into());
             num_relocs += 1;
@@ -150,7 +151,10 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
     let mut sym_table: Vec<String> = Vec::new();
 
     sym_table.push(String::from("module"));
+    // Symbol Table: process names 
     for (k, v) in &symbol_types {
+        // exclude unused local symbol
+        // only used local symbols and external/exported symbols needs further processing
         if names.contains_key(k) {
             sym_table.push(k.clone());
             continue;
@@ -161,9 +165,11 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
     }
 
     let mut sym_table_len = sym_table.len() * 8;
-    let mut sym_table_idx: HashMap<String, i32> = HashMap::new();
+    let mut sym_table_idx: HashMap<String, i32> = HashMap::new(); // symbol name -> index in Symbol Names
+    // calculate Symbol Table length
     for (i, sym) in sym_table.iter().enumerate() {
         if i == 0 {
+            // module name, always="module" now, reserved
             sym_table_len += sym.len() + 1;
             continue;
         }
@@ -178,23 +184,23 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
 
     // raw symbol tabel size
     image.extend_from_slice(&sym_table_len.to_le_bytes()[0..4]); 
-    // code size
     image.extend_from_slice(&code_section.data().unwrap().len().to_le_bytes()[0..4]); 
-    // data size
     image.extend_from_slice(&data_section.data().unwrap().len().to_le_bytes()[0..4]); 
-    // bss size
     image.extend_from_slice(&bss_section.data().unwrap().len().to_le_bytes()[0..4]); 
     // symbol number
     image.extend_from_slice(&sym_table.len().to_le_bytes()[0..4]);
 
     let mut hash_set: HashSet<String> = HashSet::new();
+    // Write Relocation table
     for reloc in &vec_relocations {
         let mut p = 0;
         match reloc.r_type {
             RelocationType::ABS32 => {
+                // p = where to store function address
                 p = reloc.r_offset;
             }
             RelocationType::MOVT_BREL => {
+                // p = index in data section
                 p = *names.get(&reloc.name).unwrap();
                 if hash_set.contains(&reloc.name) {
                     continue;
@@ -205,17 +211,19 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
                 continue;
             }
         }
-        // println!("reloc name={}", reloc.name);
+        // q = index in Symbol Names
         let q = sym_table_idx.get(&reloc.name).unwrap();
         image.extend_from_slice(&p.to_le_bytes()[0..4]);
         image.extend_from_slice(&q.to_le_bytes()[0..4]);
     }
+    // Write every global function's index
     for func in g_funcs {
         let idx = sym_table_idx.get(&func).unwrap();
         image.extend_from_slice(&idx.to_le_bytes()[0..4]);
     }
 
     sym_table_len = 0;
+    // Write Symbol table
     for (i, sym) in sym_table.iter().enumerate() {
         if i > 0 {
             let mut type_data = match symbol_types[sym] {
@@ -224,24 +232,30 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
                 SymbolType::External => 2,
             };
             let mut add = symbol_addresses[sym];
-            let mut add_off = code_section.size();
+            let mut off = code_section.size();
             if type_data == 2 {
-                add_off = 0;
+                off = 0;
             }
+            // if sym is a function
             if let Some(SectionIndex(1)) = symbol_sections.get(sym) {
                 type_data += 4;
-                add_off = 0;
+                off = 0;
             }
-            add -= add_off;
+            add -= off;
             let x = (type_data << 28) | (sym_table_len as u32);
             if (type_data & 3) == 0 {
                 add = 0;
             } else {
                 sym_table_len += sym.len() + 1;
             }
+            // x = type_data<<28 | (index in Symbol Names)
+            // if sym is a function, add=where to store function address
+            // if sym is a variable, add=index in code section=symbol_address-len(code_section)
+            // if sym is external, add=0
             image.extend_from_slice(&x.to_le_bytes()[0..4]);
             image.extend_from_slice(&add.to_le_bytes()[0..4]);
         } else {
+            // module name, reserved
             let x = (3 << 28) | (sym_table_len);
             let add = 0i32;
             image.extend_from_slice(&x.to_le_bytes()[0..4]);
@@ -249,7 +263,7 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
             sym_table_len += sym.len() + 1;
         }
     }
-
+    // write Symbol Names in a compact manner
     for (i, sym) in sym_table.iter().enumerate() {
         if i == 0 {
             image.extend_from_slice(&sym.as_bytes().to_vec());
@@ -261,11 +275,13 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
             image.extend_from_slice(&vec![0]);
         }
     }
+    // Align to 4
     if image.len() % 4 != 0 {
         image.extend_from_slice(&vec![0; 4 - image.len() % 4]);
     }
     image.extend_from_slice(&code_section.data()?);
     image.extend_from_slice(&data_section.data()?);
+    // Write image to specific file
     let mut file = fs::File::create("../dl-lib/src/lib/binary.rs")?;
 
     file.write_fmt(format_args!(
@@ -283,14 +299,13 @@ fn main() {
     let raw_objs: Vec<String> = vec![String::from("module.o")];
     let mut gfuncs = Vec::new();
     for obj in &raw_objs {
-        let funcs = redefine_symbols(obj);
-        gfuncs.extend_from_slice(&funcs);
-    }
+        let funcs = add_prefix(obj);
+        gfuncs.extend_from_slice(&funcs);         
+        
+    } 
     for obj in &raw_objs {
-        objs.push(obj.replace(".o", ".1.o"));
-    }
-    for obj in &raw_objs {
-        objs.push(obj.replace(".o", ".2.o"));
+        objs.push(obj.replace(".o", "_pre.o"));
+        objs.push(obj.clone());
     }
 
     link_objects(&objs);
