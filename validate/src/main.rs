@@ -1,4 +1,5 @@
 use std::env::join_paths;
+use std::str;
 
 use clap::Parser;
 
@@ -91,6 +92,7 @@ fn main() {
             .unwrap();
         if o3.status.success() && o4.status.success() {
             println!("\tdl ok.");
+            println!("\t{:}", String::from_utf8(o4.stderr.clone()).unwrap());         
         } else {
             println!("\tdl failed.");
         }
