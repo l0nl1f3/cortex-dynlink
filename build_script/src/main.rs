@@ -14,12 +14,13 @@ fn wrap_name(func: &str) -> String {
     format!("__{}__{}", name_prefix_8, func)
 }
 
-// Generate interposition: asm.s -> $obj_pre.o
+// Generate interposition: asm.s -> obj_pre.o
 fn add_prefix(obj: &String) -> Vec<String> {
     let module_name = "module"; //
     let pub_funcs = readelf::get_pub_funcs(&obj).unwrap();
     // println!("{:?}", pub_funcs);
     let mut asm_repeat_body = String::from("");
+    // Generate interposition for every global function
     for func in &pub_funcs {
         let mut repeat = String::from(literals::FUNPRE);
         repeat = repeat
@@ -30,7 +31,7 @@ fn add_prefix(obj: &String) -> Vec<String> {
 
     let mut obj_pre = String::from(literals::OBJPRE);
     obj_pre = obj_pre.replace("{s}", &wrap_name(module_name));
-
+    
     let asm = format!(
         "{}{}{}{}",
         literals::ASM_PRE,
@@ -44,7 +45,7 @@ fn add_prefix(obj: &String) -> Vec<String> {
     assemble_cmd = assemble_cmd
         .replace("{asm}", "asm.s")
         .replace("{elf}", &obj_2);
-
+    // asm.s -> obj_pre.o
     let output = Command::new("bash")
         .arg("-c")
         .arg(assemble_cmd)
