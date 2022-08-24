@@ -11,7 +11,7 @@ pub const ASM_SUF: &str = "
 
 pub const FUNPRE: &str = "
 .thumb_func
-.align 1
+.align 4
 .globl {s}
 .type {s}, %function
 .extern {modulename}
@@ -26,7 +26,7 @@ b {modulename}
 
 pub const OBJPRE: &str = "
 .thumb_func
-.align 1
+.align 4
 .globl {s}
 .type {s}, %function
 {s}:
