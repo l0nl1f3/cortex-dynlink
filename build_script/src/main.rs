@@ -1,5 +1,5 @@
 mod utils;
-use utils::{literals, readelf, relocations, symbols};
+use utils::{literals, readelf, relocations};
 use utils::{relocations::RelocationType, symbols::SymbolType};
 
 use md5;
@@ -8,44 +8,67 @@ use object::{Object, ObjectSection, ObjectSymbol, SectionIndex};
 use std::collections::{HashMap, HashSet};
 use std::{error::Error, fs, io::Write, process::Command};
 
-fn wrap_name(func: &str) -> String {
+// use crate::{TEST, TEST2, TEST3};
+
+fn trampoline_entry_name(func: &str) -> String {
     let name_prefix = format!("{:x}", md5::compute(func.as_bytes()));
     let name_prefix_8 = name_prefix.chars().take(8).collect::<String>();
     format!("__{}__{}", name_prefix_8, func)
 }
 
-// Generate interposition: asm.s -> obj_pre.o
-fn add_prefix(obj: &String) -> Vec<String> {
-    let module_name = "module"; //
-    let pub_funcs = readelf::get_pub_funcs(&obj).unwrap();
-    // println!("{:?}", pub_funcs);
-    let mut asm_repeat_body = String::from("");
-    // Generate interposition for every global function
-    for func in &pub_funcs {
-        let mut repeat = String::from(literals::FUNPRE);
-        repeat = repeat
-            .replace("{s}", &wrap_name(func))
-            .replace("{modulename}", &wrap_name(module_name));
-        asm_repeat_body.push_str(&repeat);
-    }
 
-    let mut obj_pre = String::from(literals::OBJPRE);
-    obj_pre = obj_pre.replace("{s}", &wrap_name(module_name));
-    
+/// For a given object file, for each contained public function,
+/// generate a trampoline such that R9 will be updated before calling
+/// into the actual function.
+///
+/// The trampolines have the following layout:
+/// __hash1_func1:
+///     push    {r9, lr}
+///     movw    r11, #0  // r11 will hold func1's runtime address
+///     movt    r11, #0
+///     b       common_trampoline
+/// __hash2_func2:
+///     push    {r9, lr}
+///     movw    r11, #0
+///     movt    r11, #0
+///     b       common_trampoline
+/// __hash3__func3:
+///     ...
+/// common_trampoline:
+///     movw    r9, #0    // switch R9
+///     movt    r9, #0
+///     blx     r11       // call into function
+///     pop     {r9, pc}
+fn compile_trampoline(obj_path: &str, module_name: &str) {
+    let pub_funcs = readelf::get_pub_funcs(obj_path).unwrap();
+
+    let func_trampolines = pub_funcs.iter().fold(String::new(), |mut folded, func| {
+        folded.push_str(&format!(
+            crate::FUNPRE!(),
+            s = trampoline_entry_name(func),
+            modulename = trampoline_entry_name(module_name)
+        ));
+        folded
+    });
+
+    let common_trampoline = format!(crate::OBJPRE!(), s = trampoline_entry_name(module_name));
+
     let asm = format!(
         "{}{}{}{}",
-        literals::ASM_PRE,
-        asm_repeat_body,
-        obj_pre,
-        literals::ASM_SUF
+        literals::ASM_HEAD,
+        func_trampolines,
+        common_trampoline,
+        literals::ASM_TAIL
     );
+
     fs::write("asm.s", asm).unwrap();
-    let obj_2 = obj.replace(".o", "_pre.o");
-    let mut assemble_cmd = String::from(literals::ASM_CMD);
-    assemble_cmd = assemble_cmd
-        .replace("{asm}", "asm.s")
-        .replace("{elf}", &obj_2);
-    // asm.s -> obj_pre.o
+
+    // TODO: change _pre
+    let trampo_path = obj_path.replace(".o", "_pre.o");
+
+    let assemble_cmd = format!(crate::ASM_CMD!(), asm = "asm.s", elf = trampo_path);
+
+    // Invoke compiler to compile the generated asm file into an object file.
     let output = Command::new("bash")
         .arg("-c")
         .arg(assemble_cmd)
@@ -55,7 +78,6 @@ fn add_prefix(obj: &String) -> Vec<String> {
         panic!("Assembler failed!");
     }
     println!("ASM: {:?}", output);
-    pub_funcs
 }
 
 // link interposition and original objects
@@ -65,7 +87,7 @@ fn link_objects(objs: &Vec<String>) {
     let mut link_cmd = String::from(literals::LINK_CMD);
     link_cmd = link_cmd.replace("{input}", &input);
     link_cmd = link_cmd.replace("{output}", &output);
-    // println!("{:?}", link_cmd);
+
     let output = Command::new("bash")
         .arg("-c")
         .arg(link_cmd)
@@ -96,19 +118,20 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
         if name.is_empty() // exclude symbol associate with section (STT_SECTION)
             || name.starts_with("$t")
             || name.starts_with("$d")  
-            || name.ends_with("module") // exclude symbol "module" 
+            || name.ends_with("module")
+        // exclude symbol "module"
         {
             continue;
         }
         let symbol_type = match (symbol.is_global(), symbol.is_undefined(), symbol.kind()) {
             (true, false, _) => Some(SymbolType::Exported),
             (true, _, _) => Some(SymbolType::External),
-            (_, _, object::SymbolKind::File) => None, 
+            (_, _, object::SymbolKind::File) => None,
             (_, _, _) => Some(SymbolType::Local),
         };
         if let Some(symbol_type) = symbol_type {
             symbol_types.insert(name.clone(), symbol_type);
-        } 
+        }
         if let Some(section_index) = symbol.section_index() {
             symbol_sections.insert(name.clone(), section_index);
         }
@@ -152,7 +175,7 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
     let mut sym_table: Vec<String> = Vec::new();
 
     sym_table.push(String::from("module"));
-    // Symbol Table: process names 
+    // Symbol Table: process names
     for (k, v) in &symbol_types {
         // exclude unused local symbol
         // only used local symbols and external/exported symbols needs further processing
@@ -167,7 +190,7 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
 
     let mut sym_table_len = sym_table.len() * 8;
     let mut sym_table_idx: HashMap<String, i32> = HashMap::new(); // symbol name -> index in Symbol Names
-    // calculate Symbol Table length
+                                                                  // calculate Symbol Table length
     for (i, sym) in sym_table.iter().enumerate() {
         if i == 0 {
             // module name, always="module" now, reserved
@@ -184,17 +207,17 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
     sym_table_len -= sym_table_len % 4;
 
     // raw symbol tabel size
-    image.extend_from_slice(&sym_table_len.to_le_bytes()[0..4]); 
-    image.extend_from_slice(&code_section.data().unwrap().len().to_le_bytes()[0..4]); 
-    image.extend_from_slice(&data_section.data().unwrap().len().to_le_bytes()[0..4]); 
-    image.extend_from_slice(&bss_section.data().unwrap().len().to_le_bytes()[0..4]); 
+    image.extend_from_slice(&sym_table_len.to_le_bytes()[0..4]);
+    image.extend_from_slice(&code_section.data().unwrap().len().to_le_bytes()[0..4]);
+    image.extend_from_slice(&data_section.data().unwrap().len().to_le_bytes()[0..4]);
+    image.extend_from_slice(&bss_section.data().unwrap().len().to_le_bytes()[0..4]);
     // symbol number
     image.extend_from_slice(&sym_table.len().to_le_bytes()[0..4]);
 
     let mut hash_set: HashSet<String> = HashSet::new();
     // Write Relocation table
     for reloc in &vec_relocations {
-        let mut p = 0;
+        let p;
         match reloc.r_type {
             RelocationType::ABS32 => {
                 // p = where to store function address
@@ -296,19 +319,27 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
 
 // Statically link the raw_objects[] into single dynamic library.
 fn main() {
-    let mut objs: Vec<String> = Vec::new();
-    let raw_objs: Vec<String> = vec![String::from("module.o")];
-    let mut gfuncs = Vec::new();
-    for obj in &raw_objs {
-        let funcs = add_prefix(obj);
-        gfuncs.extend_from_slice(&funcs);         
-        
-    } 
-    for obj in &raw_objs {
-        objs.push(obj.replace(".o", "_pre.o"));
-        objs.push(obj.clone());
+    let input_obj_paths: Vec<String> = vec![String::from("module.o")];
+
+    // Compile trampoline for each input object file.
+    for path in &input_obj_paths {
+        // TODO: change fixed "module"
+        compile_trampoline(path, "module");
     }
 
-    link_objects(&objs);
-    process_binary(&String::from("out.elf"), gfuncs);
+    let glb_funcs: Vec<_> = input_obj_paths
+        .iter()
+        .flat_map(|path| readelf::get_pub_funcs(path).unwrap())
+        .collect();
+
+    let trampoline_paths: Vec<_> = input_obj_paths
+        .iter()
+        .map(|path| path.replace(".o", "_pre.o"))
+        .collect();
+
+    let mut linker_input_path = input_obj_paths;
+    linker_input_path.extend(trampoline_paths.into_iter());
+
+    link_objects(&linker_input_path);
+    process_binary(&String::from("out.elf"), glb_funcs).unwrap();
 }

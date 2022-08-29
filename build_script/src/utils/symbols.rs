@@ -7,6 +7,7 @@ pub enum SymbolType {
     External,
 }
 
+#[allow(dead_code)]
 pub fn get_symbol_type(symbol: Symbol) -> Option<SymbolType> {
     match (symbol.is_global(), symbol.is_undefined(), symbol.kind()) {
         (true, false, _) => Some(SymbolType::Exported),

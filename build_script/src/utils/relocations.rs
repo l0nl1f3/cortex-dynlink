@@ -2,11 +2,11 @@ use object::elf;
 use object::elf::FileHeader32;
 use object::read::elf::{FileHeader, Rel, SectionHeader, Sym};
 use object::Endianness;
-use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 
 #[derive(Debug, Clone)]
+#[allow(non_camel_case_types)]
 pub enum RelocationType {
     MOVW_BREL_NC,
     MOVT_BREL,

@@ -1,6 +1,4 @@
-use object::{Object, ObjectSection, ObjectSymbol, SectionIndex};
-// use object::elf:;
-use std::collections::HashMap;
+use object::{Object, ObjectSymbol};
 use std::error::Error;
 use std::fs;
 
@@ -15,7 +13,7 @@ use std::fs;
 //   Ok(results)
 // }
 
-pub fn get_pub_funcs(obj: &String) -> Result<Vec<String>, Box<dyn Error>> {
+pub fn get_pub_funcs(obj: &str) -> Result<Vec<String>, Box<dyn Error>> {
     let bin_data = fs::read(obj)?;
     let obj_file = object::File::parse(&*bin_data)?;
     let mut results: Vec<String> = Vec::new();
