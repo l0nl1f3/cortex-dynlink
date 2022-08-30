@@ -96,7 +96,27 @@ fn link_objects(objs: &Vec<String>) {
     }
 }
 
-// parse the linked object into dynamic loadable image
+/// For a given object file, and its public functions,
+/// generate a binary that can be parsed by dl-lib
+/// The binary has the following layout, numbers has width and in little-endian order
+///
+/// ---
+/// num_global_functions, num_tables, num_relocs, raw_symbol_table_length
+/// code section length, data section length, bss section length
+/// func1's index in symbol table
+/// func2's index in symbol table
+/// ...
+/// reloc1 offset, reloc1 index in symbol table
+/// reloc2 offset, reloc2 index in symbol table
+/// ...
+/// symbol1 index in symbol names, symbol1 address
+/// symbol2 index in symbol names, symbol2 address
+/// ...
+/// symbol names = symbol1.name 0 symbol2.name 0 ...
+/// data section
+/// code section
+/// bss section
+/// ---
 fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Error>> {
     let bin_data = fs::read(obj)?;
     let obj_file = object::File::parse(&*bin_data)?;
@@ -128,101 +148,95 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
         };
         if let Some(symbol_type) = symbol_type {
             symbol_types.insert(name.clone(), symbol_type);
+            symbol_sections.insert(name.clone(), symbol.section_index().unwrap());
+            symbol_addresses.insert(name.clone(), symbol.address());
         }
-        if let Some(section_index) = symbol.section_index() {
-            symbol_sections.insert(name.clone(), section_index);
-        }
-        symbol_addresses.insert(name.clone(), symbol.address());
     }
 
     // switch to low-level read api, something not right in the unified read.
     let vec_relocations: Vec<relocations::Relocation> = relocations::get_relocations(obj).unwrap();
     let mut names: HashMap<String, u32> = HashMap::new(); // symbol name -> symbol index in relocation table
-    let mut num_relocs = 0;
+
+    let (variables, functions): (_, Vec<_>) = vec_relocations.into_iter().partition(|x| {
+        if let RelocationType::MOVT_BREL | RelocationType::MOVW_BREL_NC = x.r_type {
+            true
+        } else {
+            false
+        }
+    });
+
     // Relocation Table: process global variables
-    for reloc in &vec_relocations {
-        if let RelocationType::MOVT_BREL | RelocationType::MOVW_BREL_NC = reloc.r_type {
-            // global variable: multiple pair of MOVW and MOVT, only keep one
-            if names.contains_key(&reloc.name) {
-                continue;
-            }
-            names.insert(reloc.name.clone(), num_relocs);
-            num_relocs += 1;
+    // global variable: multiple pair of MOVW and MOVT, only keep one
+    for reloc in variables {
+        if names.contains_key(&reloc.name) {
+            continue;
         }
+        names.insert(reloc.name.clone(), names.len() as u32);
     }
-    let num_table = num_relocs;
+    let num_table = names.len();
+
     // Relocation Table: process global functions
-    for reloc in &vec_relocations {
-        if let RelocationType::ABS32 = reloc.r_type {
-            // function call: 1 ABS32, keep all
-            let offset = reloc.r_offset;
-            names.insert(reloc.name.clone(), offset.into());
-            num_relocs += 1;
-        }
-    }
+    // function call: 1 ABS32, keep all
+    let func_relocs: HashMap<_, _> = functions
+        .iter()
+        .map(|f| (f.name.clone(), f.r_offset))
+        .collect();
+    names.extend(func_relocs);
 
     let mut image: Vec<u8> = Vec::new();
-    // number of global functions
-    image.extend(&(g_funcs.len()).to_le_bytes());
-    // number of got entries
-    image.extend(&num_table.to_le_bytes());
-    // number of relocations
-    image.extend(&num_relocs.to_le_bytes());
+    image.extend(&(g_funcs.len()).to_le_bytes()[0..4]);
+    image.extend(&num_table.to_le_bytes()[0..4]);
+    image.extend(&names.len().to_le_bytes()[0..4]);
 
-    let mut sym_table: Vec<String> = Vec::new();
+    let mut sym_names: Vec<String> = Vec::new();
 
-    sym_table.push(String::from("module"));
+    sym_names.push(String::from("module"));
     // Symbol Table: process names
     for (k, v) in &symbol_types {
         // exclude unused local symbol
         // only used local symbols and external/exported symbols needs further processing
         if names.contains_key(k) {
-            sym_table.push(k.clone());
+            sym_names.push(k.clone());
             continue;
         }
         if let SymbolType::External | SymbolType::Exported = v {
-            sym_table.push(k.clone());
+            sym_names.push(k.clone());
         }
     }
 
-    let mut sym_table_len = sym_table.len() * 8;
-    let mut sym_table_idx: HashMap<String, i32> = HashMap::new(); // symbol name -> index in Symbol Names
-                                                                  // calculate Symbol Table length
-    for (i, sym) in sym_table.iter().enumerate() {
-        if i == 0 {
-            // module name, always="module" now, reserved
-            sym_table_len += sym.len() + 1;
-            continue;
-        }
-        if let SymbolType::External | SymbolType::Exported = symbol_types[sym] {
+    let mut sym_table_len = sym_names.len() * 8;
+    let mut sym_table_idx: HashMap<String, u32> = HashMap::new(); // symbol name -> index in Symbol Names
+
+    for (i, sym) in sym_names.iter().enumerate() {
+        if let Some(SymbolType::External) | Some(SymbolType::Exported) | None =
+            symbol_types.get(sym)
+        {
             sym_table_len += sym.len() + 1;
         }
-        sym_table_idx.insert(sym.clone(), i as i32);
+        sym_table_idx.insert(sym.clone(), i as u32);
     }
-    // align to 4 bytes
+
     sym_table_len += 3;
     sym_table_len -= sym_table_len % 4;
 
-    // raw symbol tabel size
-    image.extend(&sym_table_len.to_le_bytes());
-    image.extend(&code_section.len().to_le_bytes());
-    image.extend(&data_section.len().to_le_bytes());
-    image.extend(&bss_section.len().to_le_bytes());
-    // symbol number
-    image.extend(&sym_table.len().to_le_bytes());
+    image.extend(&sym_table_len.to_le_bytes()[0..4]);
+    image.extend(&code_section.len().to_le_bytes()[0..4]);
+    image.extend(&data_section.len().to_le_bytes()[0..4]);
+    image.extend(&bss_section.len().to_le_bytes()[0..4]);
+    image.extend(&sym_names.len().to_le_bytes()[0..4]);
 
     let mut hash_set: HashSet<String> = HashSet::new();
+    let vec_relocations = relocations::get_relocations(obj).unwrap();
     // Write Relocation table
     for reloc in &vec_relocations {
         let p;
         match reloc.r_type {
             RelocationType::ABS32 => {
-                // p = where to store function address
                 p = reloc.r_offset;
             }
             RelocationType::MOVT_BREL => {
                 // p = index in data section
-                p = *names.get(&reloc.name).unwrap();
+                p = *names.get(&reloc.name).unwrap() as u32;
                 if hash_set.contains(&reloc.name) {
                     continue;
                 }
@@ -232,7 +246,6 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
                 continue;
             }
         }
-        // q = index in Symbol Names
         let q = sym_table_idx.get(&reloc.name).unwrap();
         image.extend(&p.to_le_bytes()[0..4]);
         image.extend(&q.to_le_bytes()[0..4]);
@@ -247,15 +260,15 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
 
     sym_table_len = 0;
     // Write Symbol table
-    for (i, sym) in sym_table.iter().enumerate() {
+    for (i, sym) in sym_names.iter().enumerate() {
         if i > 0 {
             let mut type_data = match symbol_types[sym] {
                 SymbolType::Local => 0,
                 SymbolType::Exported => 1,
                 SymbolType::External => 2,
             };
-            let mut add = symbol_addresses[sym] as usize;
-            let mut off = code_section.len();
+            let mut add = symbol_addresses[sym];
+            let mut off = code_section.len() as u64;
             if type_data == 2 {
                 off = 0;
             }
@@ -271,29 +284,25 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
             } else {
                 sym_table_len += sym.len() + 1;
             }
-            // x = type_data<<28 | (index in Symbol Names)
-            // if sym is a function, add=where to store function address
-            // if sym is a variable, add=index in code section=symbol_address-len(code_section)
-            // if sym is external, add=0
-            image.extend(&x.to_le_bytes());
-            image.extend(&add.to_le_bytes());
+            image.extend(&x.to_le_bytes()[0..4]);
+            image.extend(&add.to_le_bytes()[0..4]);
         } else {
             // module name, reserved
             let x = (3 << 28) | (sym_table_len);
             let add = 0i32;
-            image.extend(&x.to_le_bytes());
-            image.extend(&add.to_le_bytes());
+            image.extend(&x.to_le_bytes()[0..4]);
+            image.extend(&add.to_le_bytes()[0..4]);
             sym_table_len += sym.len() + 1;
         }
     }
 
-    let sym_names: Vec<_> = sym_table
+    let sym_names: Vec<_> = sym_names
         .iter()
         .flat_map(|sym| {
             if let Some(SymbolType::External) | Some(SymbolType::Exported) | None =
                 symbol_types.get(sym)
             {
-                format!("{}{}", sym, " ").as_bytes().to_vec()
+                format!("{}\0", sym).as_bytes().to_vec()
             } else {
                 "".as_bytes().to_vec()
             }
