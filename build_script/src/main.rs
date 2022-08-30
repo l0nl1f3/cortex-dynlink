@@ -178,7 +178,8 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
     let num_table = reloc_table_idx.len();
 
     // Relocation Table: process global functions
-    // function call: 1 ABS32, keep all
+    // function call: keep one in hashmap, all need to be counted in num_relocs
+    let num_relocs = num_table + functions.len();
     let func_relocs: HashMap<_, _> = functions
         .iter()
         .map(|f| (f.name.clone(), f.r_offset))
@@ -188,7 +189,7 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
     let mut image: Vec<u8> = Vec::new();
     image.extend(&(g_funcs.len()).to_le_bytes()[0..4]);
     image.extend(&num_table.to_le_bytes()[0..4]);
-    image.extend(&reloc_table_idx.len().to_le_bytes()[0..4]);
+    image.extend(&num_relocs.to_le_bytes()[0..4]);
 
     let mut sym_names: Vec<String> = Vec::new();
 
