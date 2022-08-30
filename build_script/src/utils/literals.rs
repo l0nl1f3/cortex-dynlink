@@ -51,4 +51,9 @@ macro_rules! OBJPRE {
     " };
 }
 
-pub const LINK_CMD: &str = "ld.lld -Tcode_before_data.ld --unresolved-symbols=ignore-in-object-files --emit-relocs {input} -o {output}";
+#[macro_export]
+macro_rules! LINK_CMD{
+    () => {
+        r"ld.lld -Tcode_before_data.ld --unresolved-symbols=ignore-in-object-files --emit-relocs {input} -o {output}"
+    };
+}

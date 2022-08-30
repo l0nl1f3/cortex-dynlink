@@ -16,7 +16,6 @@ fn trampoline_entry_name(func: &str) -> String {
     format!("__{}__{}", name_prefix_8, func)
 }
 
-
 /// For a given object file, for each contained public function,
 /// generate a trampoline such that R9 will be updated before calling
 /// into the actual function.
@@ -74,38 +73,36 @@ fn compile_trampoline(obj_path: &str, module_name: &str) {
         .arg(assemble_cmd)
         .output()
         .unwrap();
+    println!("ASM: {:?}", output);
     if !output.status.success() {
         panic!("Assembler failed!");
     }
-    println!("ASM: {:?}", output);
 }
 
 // link interposition and original objects
 fn link_objects(objs: &Vec<String>) {
     let input = objs.join(" ");
     let output = "out.elf";
-    let mut link_cmd = String::from(literals::LINK_CMD);
-    link_cmd = link_cmd.replace("{input}", &input);
-    link_cmd = link_cmd.replace("{output}", &output);
+    let link_cmd = format!(crate::LINK_CMD!(), input = input, output = output);
 
     let output = Command::new("bash")
         .arg("-c")
         .arg(link_cmd)
         .output()
         .unwrap();
+    println!("LNK: {:?}", output);
     if !output.status.success() {
         panic!("Linker failed!");
     }
-    println!("LNK: {:?}", output);
 }
 
 // parse the linked object into dynamic loadable image
 fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Error>> {
     let bin_data = fs::read(obj)?;
     let obj_file = object::File::parse(&*bin_data)?;
-    let code_section = obj_file.section_by_name(".text").unwrap();
-    let data_section = obj_file.section_by_name(".data").unwrap();
-    let bss_section = obj_file.section_by_name(".bss").unwrap();
+    let code_section = obj_file.section_by_name(".text").unwrap().data()?;
+    let data_section = obj_file.section_by_name(".data").unwrap().data()?;
+    let bss_section = obj_file.section_by_name(".bss").unwrap().data()?;
     let symbols = obj_file.symbols();
 
     let mut symbol_types: HashMap<String, SymbolType> = HashMap::new();
@@ -166,11 +163,11 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
 
     let mut image: Vec<u8> = Vec::new();
     // number of global functions
-    image.extend_from_slice(&(g_funcs.len()).to_le_bytes()[0..4]);
+    image.extend(&(g_funcs.len()).to_le_bytes());
     // number of got entries
-    image.extend_from_slice(&num_table.to_le_bytes()[0..4]);
+    image.extend(&num_table.to_le_bytes());
     // number of relocations
-    image.extend_from_slice(&num_relocs.to_le_bytes()[0..4]);
+    image.extend(&num_relocs.to_le_bytes());
 
     let mut sym_table: Vec<String> = Vec::new();
 
@@ -207,12 +204,12 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
     sym_table_len -= sym_table_len % 4;
 
     // raw symbol tabel size
-    image.extend_from_slice(&sym_table_len.to_le_bytes()[0..4]);
-    image.extend_from_slice(&code_section.data().unwrap().len().to_le_bytes()[0..4]);
-    image.extend_from_slice(&data_section.data().unwrap().len().to_le_bytes()[0..4]);
-    image.extend_from_slice(&bss_section.data().unwrap().len().to_le_bytes()[0..4]);
+    image.extend(&sym_table_len.to_le_bytes());
+    image.extend(&code_section.len().to_le_bytes());
+    image.extend(&data_section.len().to_le_bytes());
+    image.extend(&bss_section.len().to_le_bytes());
     // symbol number
-    image.extend_from_slice(&sym_table.len().to_le_bytes()[0..4]);
+    image.extend(&sym_table.len().to_le_bytes());
 
     let mut hash_set: HashSet<String> = HashSet::new();
     // Write Relocation table
@@ -237,14 +234,16 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
         }
         // q = index in Symbol Names
         let q = sym_table_idx.get(&reloc.name).unwrap();
-        image.extend_from_slice(&p.to_le_bytes()[0..4]);
-        image.extend_from_slice(&q.to_le_bytes()[0..4]);
+        image.extend(&p.to_le_bytes()[0..4]);
+        image.extend(&q.to_le_bytes()[0..4]);
     }
     // Write every global function's index
-    for func in g_funcs {
-        let idx = sym_table_idx.get(&func).unwrap();
-        image.extend_from_slice(&idx.to_le_bytes()[0..4]);
-    }
+    image.extend(
+        g_funcs
+            .iter()
+            .flat_map(|x| sym_table_idx.get(x).unwrap().to_le_bytes())
+            .collect::<Vec<_>>(),
+    );
 
     sym_table_len = 0;
     // Write Symbol table
@@ -255,8 +254,8 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
                 SymbolType::Exported => 1,
                 SymbolType::External => 2,
             };
-            let mut add = symbol_addresses[sym];
-            let mut off = code_section.size();
+            let mut add = symbol_addresses[sym] as usize;
+            let mut off = code_section.len();
             if type_data == 2 {
                 off = 0;
             }
@@ -276,35 +275,37 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
             // if sym is a function, add=where to store function address
             // if sym is a variable, add=index in code section=symbol_address-len(code_section)
             // if sym is external, add=0
-            image.extend_from_slice(&x.to_le_bytes()[0..4]);
-            image.extend_from_slice(&add.to_le_bytes()[0..4]);
+            image.extend(&x.to_le_bytes());
+            image.extend(&add.to_le_bytes());
         } else {
             // module name, reserved
             let x = (3 << 28) | (sym_table_len);
             let add = 0i32;
-            image.extend_from_slice(&x.to_le_bytes()[0..4]);
-            image.extend_from_slice(&add.to_le_bytes()[0..4]);
+            image.extend(&x.to_le_bytes());
+            image.extend(&add.to_le_bytes());
             sym_table_len += sym.len() + 1;
         }
     }
-    // write Symbol Names in a compact manner
-    for (i, sym) in sym_table.iter().enumerate() {
-        if i == 0 {
-            image.extend_from_slice(&sym.as_bytes().to_vec());
-            image.extend_from_slice(&vec![0]);
-            continue;
-        }
-        if let SymbolType::External | SymbolType::Exported = symbol_types[sym] {
-            image.extend_from_slice(&sym.as_bytes().to_vec());
-            image.extend_from_slice(&vec![0]);
-        }
-    }
-    // Align to 4
+
+    let sym_names: Vec<_> = sym_table
+        .iter()
+        .flat_map(|sym| {
+            if let Some(SymbolType::External) | Some(SymbolType::Exported) | None =
+                symbol_types.get(sym)
+            {
+                format!("{}{}", sym, " ").as_bytes().to_vec()
+            } else {
+                "".as_bytes().to_vec()
+            }
+        })
+        .collect();
+    image.extend(sym_names);
+
     if image.len() % 4 != 0 {
-        image.extend_from_slice(&vec![0; 4 - image.len() % 4]);
+        image.extend(&vec![0; 4 - image.len() % 4]);
     }
-    image.extend_from_slice(&code_section.data()?);
-    image.extend_from_slice(&data_section.data()?);
+    image.extend(code_section);
+    image.extend(data_section);
     // Write image to specific file
     let mut file = fs::File::create("../dl-lib/src/lib/binary.rs")?;
 
