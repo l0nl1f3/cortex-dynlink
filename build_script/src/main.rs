@@ -97,7 +97,7 @@ fn link_objects(objs: &Vec<String>) {
 }
 
 /// For a given object file, and its public functions,
-/// generate a binary that can be parsed by dl-lib
+/// generate a binary image that can be parsed by dl-lib
 /// The binary has the following layout, numbers has width and in little-endian order
 ///
 /// ---
@@ -117,7 +117,7 @@ fn link_objects(objs: &Vec<String>) {
 /// code section
 /// bss section
 /// ---
-fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Error>> {
+fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Error>> {
     let bin_data = fs::read(obj)?;
     let obj_file = object::File::parse(&*bin_data)?;
     let code_section = obj_file.section_by_name(".text").unwrap().data()?;
@@ -316,15 +316,8 @@ fn process_binary(obj: &String, g_funcs: Vec<String>) -> Result<(), Box<dyn Erro
     image.extend(code_section);
     image.extend(data_section);
     // Write image to specific file
-    let mut file = fs::File::create("../dl-lib/src/lib/binary.rs")?;
-
-    file.write_fmt(format_args!(
-        "pub static BUF: [u8; {}] = {:?};\n",
-        image.len(),
-        image
-    ))?;
-    println!("{:?}", image);
-    Ok(())
+    
+    Ok(image)
 }
 
 // Statically link the raw_objects[] into single dynamic library.
@@ -351,5 +344,13 @@ fn main() {
     linker_input_path.extend(trampoline_paths.into_iter());
 
     link_objects(&linker_input_path);
-    process_binary(&String::from("out.elf"), glb_funcs).unwrap();
+    let image = make_image(&String::from("out.elf"), glb_funcs).unwrap();
+    let mut file = fs::File::create("../dl-lib/src/lib/binary.rs").expect("Open binary.rs failed");
+
+    file.write_fmt(format_args!(
+        "pub static BUF: [u8; {}] = {:?};\n",
+        image.len(),
+        image
+    )).expect("Write binary.rs failed");
+    println!("{:?}", image);
 }
