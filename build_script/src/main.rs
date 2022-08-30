@@ -98,7 +98,7 @@ fn link_objects(objs: &Vec<String>) {
 
 /// For a given object file, and its public functions,
 /// generate a binary image that can be parsed by dl-lib
-/// The binary has the following layout, numbers has width and in little-endian order
+/// The binary has the following layout, numbers have width=4 and are in little-endian order
 ///
 /// ---
 /// num_global_functions, num_tables, num_relocs, raw_symbol_table_length
@@ -167,8 +167,8 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
 
     // Relocation Table: process global variables
     // global variable: multiple pair of MOVW and MOVT, only keep one
-    let mut reloc_table_idx = variables.iter().fold(HashMap::new(), |mut folded, x| {
-        let name = String::from(x.name.clone());
+    let mut reloc_table_idx = variables.iter().fold(HashMap::new(), |mut folded, reloc| {
+        let name = String::from(reloc.name.clone());
         if !folded.contains_key(&name) {
             folded.insert(name, folded.len() as u32);
         }
@@ -182,7 +182,7 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
     let num_relocs = num_table + functions.len();
     let func_relocs: HashMap<_, _> = functions
         .iter()
-        .map(|f| (f.name.clone(), f.r_offset))
+        .map(|func| (func.name.clone(), func.r_offset))
         .collect();
     reloc_table_idx.extend(func_relocs);
 
@@ -257,7 +257,7 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
     image.extend(
         g_funcs
             .iter()
-            .flat_map(|x| sym_table_idx.get(x).unwrap().to_le_bytes())
+            .flat_map(|name| sym_table_idx.get(name).unwrap().to_le_bytes())
             .collect::<Vec<_>>(),
     );
 
