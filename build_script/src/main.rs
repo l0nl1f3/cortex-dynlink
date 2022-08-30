@@ -123,23 +123,24 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
     let code_section = obj_file.section_by_name(".text").unwrap().data()?;
     let data_section = obj_file.section_by_name(".data").unwrap().data()?;
     let bss_section = obj_file.section_by_name(".bss").unwrap().data()?;
-    let symbols = obj_file.symbols();
+    let filtered_symbols: Vec<_> = obj_file
+        .symbols()
+        .filter(|s| {
+            let name = s.name().unwrap();
+            !name.is_empty()
+                && !name.starts_with("$t")
+                && !name.starts_with("$d")
+                && !name.ends_with("module")
+        })
+        .collect();
 
     let mut symbol_types: HashMap<String, SymbolType> = HashMap::new();
     let mut symbol_sections: HashMap<String, SectionIndex> = HashMap::new();
     let mut symbol_addresses: HashMap<String, u64> = HashMap::new();
 
     // get symbol type (Exported, External, Local, None), section index, and address
-    for symbol in symbols {
+    for symbol in filtered_symbols {
         let name = String::from(symbol.name().unwrap());
-        if name.is_empty() // exclude symbol associate with section (STT_SECTION)
-            || name.starts_with("$t")
-            || name.starts_with("$d")  
-            || name.ends_with("module")
-        // exclude symbol "module"
-        {
-            continue;
-        }
         let symbol_type = match (symbol.is_global(), symbol.is_undefined(), symbol.kind()) {
             (true, false, _) => Some(SymbolType::Exported),
             (true, _, _) => Some(SymbolType::External),
@@ -155,7 +156,6 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
 
     // switch to low-level read api, something not right in the unified read.
     let vec_relocations: Vec<relocations::Relocation> = relocations::get_relocations(obj).unwrap();
-    let mut names: HashMap<String, u32> = HashMap::new(); // symbol name -> symbol index in relocation table
 
     let (variables, functions): (_, Vec<_>) = vec_relocations.into_iter().partition(|x| {
         if let RelocationType::MOVT_BREL | RelocationType::MOVW_BREL_NC = x.r_type {
@@ -167,13 +167,15 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
 
     // Relocation Table: process global variables
     // global variable: multiple pair of MOVW and MOVT, only keep one
-    for reloc in variables {
-        if names.contains_key(&reloc.name) {
-            continue;
+    let mut reloc_table_idx = variables.iter().fold(HashMap::new(), |mut folded, x| {
+        let name = String::from(x.name.clone());
+        if !folded.contains_key(&name) {
+            folded.insert(name, folded.len() as u32);
         }
-        names.insert(reloc.name.clone(), names.len() as u32);
-    }
-    let num_table = names.len();
+        folded
+    });
+
+    let num_table = reloc_table_idx.len();
 
     // Relocation Table: process global functions
     // function call: 1 ABS32, keep all
@@ -181,12 +183,12 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
         .iter()
         .map(|f| (f.name.clone(), f.r_offset))
         .collect();
-    names.extend(func_relocs);
+    reloc_table_idx.extend(func_relocs);
 
     let mut image: Vec<u8> = Vec::new();
     image.extend(&(g_funcs.len()).to_le_bytes()[0..4]);
     image.extend(&num_table.to_le_bytes()[0..4]);
-    image.extend(&names.len().to_le_bytes()[0..4]);
+    image.extend(&reloc_table_idx.len().to_le_bytes()[0..4]);
 
     let mut sym_names: Vec<String> = Vec::new();
 
@@ -195,7 +197,7 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
     for (k, v) in &symbol_types {
         // exclude unused local symbol
         // only used local symbols and external/exported symbols needs further processing
-        if names.contains_key(k) {
+        if reloc_table_idx.contains_key(k) {
             sym_names.push(k.clone());
             continue;
         }
@@ -229,14 +231,14 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
     let vec_relocations = relocations::get_relocations(obj).unwrap();
     // Write Relocation table
     for reloc in &vec_relocations {
-        let p;
+        let offset;
         match reloc.r_type {
             RelocationType::ABS32 => {
-                p = reloc.r_offset;
+                offset = reloc.r_offset;
             }
             RelocationType::MOVT_BREL => {
                 // p = index in data section
-                p = *names.get(&reloc.name).unwrap() as u32;
+                offset = *reloc_table_idx.get(&reloc.name).unwrap() as u32;
                 if hash_set.contains(&reloc.name) {
                     continue;
                 }
@@ -246,9 +248,9 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
                 continue;
             }
         }
-        let q = sym_table_idx.get(&reloc.name).unwrap();
-        image.extend(&p.to_le_bytes()[0..4]);
-        image.extend(&q.to_le_bytes()[0..4]);
+        let idx = sym_table_idx.get(&reloc.name).unwrap();
+        image.extend(&offset.to_le_bytes()[0..4]);
+        image.extend(&idx.to_le_bytes()[0..4]);
     }
     // Write every global function's index
     image.extend(
@@ -267,25 +269,25 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
                 SymbolType::Exported => 1,
                 SymbolType::External => 2,
             };
-            let mut add = symbol_addresses[sym];
-            let mut off = code_section.len() as u64;
+            let mut address = symbol_addresses[sym];
+            let mut address_offset = code_section.len() as u64;
             if type_data == 2 {
-                off = 0;
+                address_offset = 0;
             }
             // if sym is a function
             if let Some(SectionIndex(1)) = symbol_sections.get(sym) {
                 type_data += 4;
-                off = 0;
+                address_offset = 0;
             }
-            add -= off;
+            address -= address_offset;
             let x = (type_data << 28) | (sym_table_len as u32);
             if (type_data & 3) == 0 {
-                add = 0;
+                address = 0;
             } else {
                 sym_table_len += sym.len() + 1;
             }
             image.extend(&x.to_le_bytes()[0..4]);
-            image.extend(&add.to_le_bytes()[0..4]);
+            image.extend(&address.to_le_bytes()[0..4]);
         } else {
             // module name, reserved
             let x = (3 << 28) | (sym_table_len);
@@ -315,8 +317,9 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
     }
     image.extend(code_section);
     image.extend(data_section);
+    image.extend(bss_section);
     // Write image to specific file
-    
+
     Ok(image)
 }
 
@@ -351,6 +354,7 @@ fn main() {
         "pub static BUF: [u8; {}] = {:?};\n",
         image.len(),
         image
-    )).expect("Write binary.rs failed");
+    ))
+    .expect("Write binary.rs failed");
     println!("{:?}", image);
 }
