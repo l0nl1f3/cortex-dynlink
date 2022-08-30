@@ -35,9 +35,10 @@ pub struct Relocation {
     pub name: String,
 }
 
-// get relocation entries and extract some necessary information from file obj
-pub fn get_relocations(obj: &String) -> Result<Vec<Relocation>, Box<dyn Error>> {
-    let file = fs::File::open(obj)?;
+/// For a given object file, return a vector of known Relocations
+/// Where MOVTW_BREL_NC, MOVT_BREL, ABS32 are considered known
+pub fn get_known_relocations(obj_path: &String) -> Result<Vec<Relocation>, Box<dyn Error>> {
+    let file = fs::File::open(obj_path)?;
     let data = match unsafe { memmap2::Mmap::map(&file) } {
         Ok(mmap) => mmap,
         Err(err) => {
@@ -64,13 +65,16 @@ pub fn get_relocations(obj: &String) -> Result<Vec<Relocation>, Box<dyn Error>> 
                 let sym = relocation.r_sym(endian);
                 let (name, value) = symbols
                     .and_then(|symbols| {
-                        symbols
-                            .symbol(sym as usize)
-                            .and_then(|symbol| Ok((symbol.name(endian, symbols.strings()), symbol.st_value(endian))))
+                        symbols.symbol(sym as usize).and_then(|symbol| {
+                            Ok((
+                                symbol.name(endian, symbols.strings()),
+                                symbol.st_value(endian),
+                            ))
+                        })
                     })
                     .unwrap();
-                
-                    let name = String::from_utf8(name.unwrap().to_vec()).unwrap();
+
+                let name = String::from_utf8(name.unwrap().to_vec()).unwrap();
 
                 if !name.ends_with("module") {
                     vec_relocations.push(Relocation {
@@ -84,5 +88,17 @@ pub fn get_relocations(obj: &String) -> Result<Vec<Relocation>, Box<dyn Error>> 
             }
         }
     }
-    return Ok(vec_relocations);
+    return Ok(vec_relocations
+        .into_iter()
+        .filter(|r| {
+            if let RelocationType::MOVT_BREL
+            | RelocationType::MOVW_BREL_NC
+            | RelocationType::ABS32 = r.r_type
+            {
+                true
+            } else {
+                false
+            }
+        })
+        .collect::<Vec<_>>());
 }
