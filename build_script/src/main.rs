@@ -130,6 +130,7 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
             !name.is_empty()
                 && !name.starts_with("$t")
                 && !name.starts_with("$d")
+                // TODO: change fixed module
                 && !name.ends_with("module")
         })
         .collect();
