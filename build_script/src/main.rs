@@ -117,7 +117,7 @@ fn link_objects(objs: &Vec<String>) {
 /// code section
 /// bss section
 /// ---
-fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Error>> {
+fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Error>> {
     let bin_data = fs::read(obj)?;
     let obj_file = object::File::parse(&*bin_data)?;
     let code_section = obj_file.section_by_name(".text").unwrap().data()?;
@@ -187,7 +187,7 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
     reloc_table_idx.extend(func_relocs);
 
     let mut image: Vec<u8> = Vec::new();
-    image.extend(&g_funcs.len().to_le_bytes()[0..4]);
+    image.extend(&glb_funcs.len().to_le_bytes()[0..4]);
     image.extend(&num_table.to_le_bytes()[0..4]);
     image.extend(&num_relocs.to_le_bytes()[0..4]);
 
@@ -257,7 +257,7 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
     }
     // Write every global function's index
     image.extend(
-        g_funcs
+        glb_funcs
             .iter()
             .flat_map(|name| sym_table_idx.get(name).unwrap().to_le_bytes())
             .collect::<Vec<_>>(),
@@ -339,8 +339,8 @@ fn main() {
 
     link_objects(&linker_input_path);
 
-    // handling results
     let image = make_image(&String::from("out.elf"), glb_funcs).unwrap();
+    // handling results
     let mut file = fs::File::create("../dl-lib/src/lib/binary.rs").expect("Open binary.rs failed");
 
     file.write_fmt(format_args!(
