@@ -156,7 +156,6 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
 
     // switch to low-level read api, something not right in the unified read.
     let vec_relocations = relocations::get_known_relocations(obj).unwrap();
-
     let (variables, functions): (_, Vec<_>) = vec_relocations.into_iter().partition(|x| {
         if let RelocationType::MOVT_BREL | RelocationType::MOVW_BREL_NC = x.r_type {
             true
@@ -164,27 +163,10 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
             false
         }
     });
-
-    // Relocation Table: process global variables
-    // global variable: multiple pair of MOVW and MOVT, only keep one
-    let mut reloc_table_idx = variables.iter().fold(HashMap::new(), |mut folded, reloc| {
-        let name = String::from(reloc.name.clone());
-        if !folded.contains_key(&name) {
-            folded.insert(name, folded.len() as u32);
-        }
-        folded
-    });
-
-    let num_table = reloc_table_idx.len();
-
-    // Relocation Table: process global functions
-    // function call: keep one in hashmap, all need to be counted in num_relocs
+    let var_reloc_names: HashSet<_> = variables.iter().map(|var| var.name.clone()).collect();
+    let func_reloc_names: HashSet<_> = functions.iter().map(|func| func.name.clone()).collect();
+    let num_table = var_reloc_names.len();
     let num_relocs = num_table + functions.len();
-    let func_relocs: HashMap<_, _> = functions
-        .iter()
-        .map(|func| (func.name.clone(), func.r_offset))
-        .collect();
-    reloc_table_idx.extend(func_relocs);
 
     let mut image: Vec<u8> = Vec::new();
     image.extend(&glb_funcs.len().to_le_bytes()[0..4]);
@@ -192,13 +174,12 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     image.extend(&num_relocs.to_le_bytes()[0..4]);
 
     let mut sym_names: Vec<String> = Vec::new();
-
     sym_names.push(String::from("module"));
     // Symbol Table: process names
     for (k, v) in &type_by_name {
         // exclude unused local symbol
         // only used local symbols and external/exported symbols needs further processing
-        if reloc_table_idx.contains_key(k) {
+        if var_reloc_names.contains(k) || func_reloc_names.contains(k) {
             sym_names.push(k.clone());
         } else if let SymbolType::External | SymbolType::Exported = v {
             sym_names.push(k.clone());
@@ -234,6 +215,7 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     let mut hash_set: HashSet<String> = HashSet::new();
     let vec_relocations = relocations::get_known_relocations(obj).unwrap();
     // Write Relocation table
+    let mut num_table = 0;
     for reloc in &vec_relocations {
         let offset;
         match reloc.r_type {
@@ -241,7 +223,8 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
                 offset = reloc.r_offset;
             }
             RelocationType::MOVT_BREL => {
-                offset = *reloc_table_idx.get(&reloc.name).unwrap() as u32;
+                offset = num_table;
+                num_table += 1;
                 if hash_set.contains(&reloc.name) {
                     continue;
                 }

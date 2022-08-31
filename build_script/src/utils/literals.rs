@@ -18,7 +18,8 @@ macro_rules! ASM_CMD {
 
 #[macro_export]
 macro_rules! FUNPRE {
-    () => { r"
+    () => {
+        r"
     .thumb_func
     .align 4
     .globl {s}
@@ -31,7 +32,8 @@ macro_rules! FUNPRE {
     movt r11, #0
     b {modulename}
     .size {s}, . - {s}
-    " };
+    "
+    };
 }
 
 #[macro_export]
