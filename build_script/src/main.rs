@@ -156,7 +156,7 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
 
     // switch to low-level read api, something not right in the unified read.
     let vec_relocations = relocations::get_known_relocations(obj).unwrap();
-    let (variables, functions): (_, Vec<_>) = vec_relocations.into_iter().partition(|x| {
+    let (variables, functions): (_, Vec<_>) = vec_relocations.iter().partition(|x| {
         if let RelocationType::MOVT_BREL | RelocationType::MOVW_BREL_NC = x.r_type {
             true
         } else {
@@ -214,7 +214,6 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     image.extend(&sym_names.len().to_le_bytes()[0..4]);
 
     let mut hash_set: HashSet<String> = HashSet::new();
-    let vec_relocations = relocations::get_known_relocations(obj).unwrap();
     // Write Relocation table
     let mut num_table = 0;
     for reloc in &vec_relocations {
