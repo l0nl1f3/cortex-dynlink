@@ -207,11 +207,11 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
 
     let flat_sym_names: Vec<_> = sym_names
         .iter()
-        .flat_map(|sym| {
+        .flat_map(|name| {
             if let Some(SymbolType::External) | Some(SymbolType::Exported) | None =
-                type_by_name.get(sym)
+                type_by_name.get(name)
             {
-                format!("{}\0", sym).as_bytes().to_vec()
+                format!("{}\0", name).as_bytes().to_vec()
             } else {
                 "".as_bytes().to_vec()
             }
