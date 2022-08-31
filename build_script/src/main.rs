@@ -98,9 +98,8 @@ fn link_objects(objs: &Vec<String>) {
 
 /// For a given object file, and its public functions,
 /// generate a binary image that can be parsed by dl-lib
-/// The binary has the following layout, numbers have width=4 and are in little-endian order
+/// The image has the following layout, numbers have width=4 and are in little-endian order
 ///
-/// ---
 /// num_global_functions, num_tables, num_relocs, raw_symbol_table_length
 /// code section length, data section length, bss section length
 /// func1's index in symbol table
@@ -116,7 +115,7 @@ fn link_objects(objs: &Vec<String>) {
 /// data section
 /// code section
 /// bss section
-/// ---
+/// 
 fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Error>> {
     let bin_data = fs::read(obj)?;
     let obj_file = object::File::parse(&*bin_data)?;
