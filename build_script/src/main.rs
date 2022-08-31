@@ -134,9 +134,9 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
         })
         .collect();
 
-    let mut symbol_types: HashMap<String, SymbolType> = HashMap::new();
-    let mut symbol_sections: HashMap<String, SectionIndex> = HashMap::new();
-    let mut symbol_addresses: HashMap<String, u64> = HashMap::new();
+    let mut type_by_name: HashMap<String, SymbolType> = HashMap::new();
+    let mut section_by_name: HashMap<String, SectionIndex> = HashMap::new();
+    let mut address_by_name: HashMap<String, u64> = HashMap::new();
 
     // get symbol type (Exported, External, Local, None), section index, and address
     for symbol in filtered_symbols {
@@ -148,9 +148,9 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
             (_, _, _) => Some(SymbolType::Local),
         };
         if let Some(symbol_type) = symbol_type {
-            symbol_types.insert(name.clone(), symbol_type);
-            symbol_sections.insert(name.clone(), symbol.section_index().unwrap());
-            symbol_addresses.insert(name.clone(), symbol.address());
+            type_by_name.insert(name.clone(), symbol_type);
+            section_by_name.insert(name.clone(), symbol.section_index().unwrap());
+            address_by_name.insert(name.clone(), symbol.address());
         }
     }
 
@@ -187,7 +187,7 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
     reloc_table_idx.extend(func_relocs);
 
     let mut image: Vec<u8> = Vec::new();
-    image.extend(&(g_funcs.len()).to_le_bytes()[0..4]);
+    image.extend(&g_funcs.len().to_le_bytes()[0..4]);
     image.extend(&num_table.to_le_bytes()[0..4]);
     image.extend(&num_relocs.to_le_bytes()[0..4]);
 
@@ -195,32 +195,35 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
 
     sym_names.push(String::from("module"));
     // Symbol Table: process names
-    for (k, v) in &symbol_types {
+    for (k, v) in &type_by_name {
         // exclude unused local symbol
         // only used local symbols and external/exported symbols needs further processing
         if reloc_table_idx.contains_key(k) {
             sym_names.push(k.clone());
-            continue;
-        }
-        if let SymbolType::External | SymbolType::Exported = v {
+        } else if let SymbolType::External | SymbolType::Exported = v {
             sym_names.push(k.clone());
         }
     }
 
-    let mut sym_table_len = sym_names.len() * 8;
-    let mut sym_table_idx: HashMap<String, u32> = HashMap::new(); // symbol name -> index in Symbol Names
+    let flat_sym_names: Vec<_> = sym_names
+        .iter()
+        .flat_map(|sym| {
+            if let Some(SymbolType::External) | Some(SymbolType::Exported) | None =
+                type_by_name.get(sym)
+            {
+                format!("{}\0", sym).as_bytes().to_vec()
+            } else {
+                "".as_bytes().to_vec()
+            }
+        })
+        .collect();
+    let sym_table_len = sym_names.len() * 8 + flat_sym_names.len();
 
-    for (i, sym) in sym_names.iter().enumerate() {
-        if let Some(SymbolType::External) | Some(SymbolType::Exported) | None =
-            symbol_types.get(sym)
-        {
-            sym_table_len += sym.len() + 1;
-        }
-        sym_table_idx.insert(sym.clone(), i as u32);
-    }
-
-    sym_table_len += 3;
-    sym_table_len -= sym_table_len % 4;
+    let sym_table_idx: HashMap<String, u32> = sym_names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), idx as u32))
+        .collect();
 
     image.extend(&sym_table_len.to_le_bytes()[0..4]);
     image.extend(&code_section.len().to_le_bytes()[0..4]);
@@ -238,7 +241,6 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
                 offset = reloc.r_offset;
             }
             RelocationType::MOVT_BREL => {
-                // p = index in data section
                 offset = *reloc_table_idx.get(&reloc.name).unwrap() as u32;
                 if hash_set.contains(&reloc.name) {
                     continue;
@@ -261,22 +263,22 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
             .collect::<Vec<_>>(),
     );
 
-    sym_table_len = 0;
+    let mut sym_table_len = 0;
     // Write Symbol table
     for (i, sym) in sym_names.iter().enumerate() {
         if i > 0 {
-            let mut type_data = match symbol_types[sym] {
+            let mut type_data = match type_by_name[sym] {
                 SymbolType::Local => 0,
                 SymbolType::Exported => 1,
                 SymbolType::External => 2,
             };
-            let mut address = symbol_addresses[sym];
+            let mut address = address_by_name[sym];
             let mut address_offset = code_section.len() as u64;
             if type_data == 2 {
                 address_offset = 0;
             }
             // if sym is a function
-            if let Some(SectionIndex(1)) = symbol_sections.get(sym) {
+            if let Some(SectionIndex(1)) = section_by_name.get(sym) {
                 type_data += 4;
                 address_offset = 0;
             }
@@ -299,22 +301,10 @@ fn make_image(obj: &String, g_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Err
         }
     }
 
-    let sym_names: Vec<_> = sym_names
-        .iter()
-        .flat_map(|sym| {
-            if let Some(SymbolType::External) | Some(SymbolType::Exported) | None =
-                symbol_types.get(sym)
-            {
-                format!("{}\0", sym).as_bytes().to_vec()
-            } else {
-                "".as_bytes().to_vec()
-            }
-        })
-        .collect();
-    image.extend(sym_names);
+    image.extend(flat_sym_names);
 
     if image.len() % 4 != 0 {
-        image.extend(&vec![0; 4 - image.len() % 4]);
+        image.extend(vec![0; 4 - image.len() % 4]);
     }
     image.extend(code_section);
     image.extend(data_section);
@@ -348,6 +338,8 @@ fn main() {
     linker_input_path.extend(trampoline_paths.into_iter());
 
     link_objects(&linker_input_path);
+
+    // handling results
     let image = make_image(&String::from("out.elf"), glb_funcs).unwrap();
     let mut file = fs::File::create("../dl-lib/src/lib/binary.rs").expect("Open binary.rs failed");
 
