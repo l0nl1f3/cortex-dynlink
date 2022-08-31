@@ -79,7 +79,7 @@ fn compile_trampoline(obj_path: &str, module_name: &str) {
     }
 }
 
-// link interposition and original objects
+// link given objects into out.elf
 fn link_objects(objs: &Vec<String>) {
     let input = objs.join(" ");
     let output = "out.elf";
