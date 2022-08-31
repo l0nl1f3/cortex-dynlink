@@ -169,9 +169,6 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     let num_relocs = num_table + functions.len();
 
     let mut image: Vec<u8> = Vec::new();
-    image.extend(&glb_funcs.len().to_le_bytes()[0..4]);
-    image.extend(&num_table.to_le_bytes()[0..4]);
-    image.extend(&num_relocs.to_le_bytes()[0..4]);
 
     let mut sym_names: Vec<String> = Vec::new();
     sym_names.push(String::from("module"));
@@ -206,6 +203,10 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
         .map(|(idx, name)| (name.clone(), idx as u32))
         .collect();
 
+    
+    image.extend(&glb_funcs.len().to_le_bytes()[0..4]);
+    image.extend(&num_table.to_le_bytes()[0..4]);
+    image.extend(&num_relocs.to_le_bytes()[0..4]);
     image.extend(&sym_table_len.to_le_bytes()[0..4]);
     image.extend(&code_section.len().to_le_bytes()[0..4]);
     image.extend(&data_section.len().to_le_bytes()[0..4]);
