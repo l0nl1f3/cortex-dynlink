@@ -38,15 +38,13 @@ fn main() -> ! {
     unsafe { ALLOCATOR.init(cortex_m_rt::heap_start() as usize, heap_size) }
     let bytes = lib::binary::BUF;
     let module = utils::dl_load(bytes.to_vec(), None);
-    dbg!(&module);
     let test_ptr = utils::dl_entry_by_name(&module, &String::from("test"));
     let test: fn(u8) -> bool = unsafe { mem::transmute(test_ptr as *const ()) };
     call_func_u8(test);
     loop {}
 }
 
-fn test_extern()  {
-    
+fn test_extern() {
     // bin_def: generated from testcase/extern_symbols_1a
     let bin_def: Vec<u8> = vec![
         1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 104, 0, 0, 0, 52, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 4,

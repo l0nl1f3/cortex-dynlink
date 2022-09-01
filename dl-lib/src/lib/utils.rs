@@ -39,11 +39,15 @@ fn parse_symtable(n_symbol: &usize, data: &Vec<u8>) -> Vec<Symbol> {
         p += 8;
         // let s_name be the String between q and next 0 in data
         let mut s_name = String::new();
-        while data[q] != 0 {
-            s_name.push(data[q].into());
+        if s_type & 3 != 0 {
+            while data[q] != 0 {
+                s_name.push(data[q].into());
+                q += 1;
+            }
             q += 1;
+        } else {
+            s_name = String::from("$");
         }
-        q += 1;
         symbols.push(Symbol {
             s_type,
             index,
@@ -70,8 +74,10 @@ impl Module {
     }
 }
 
-fn acquire_slice(buf: &[u8], left: usize, length: usize) -> (usize, Vec<u8>) {
-    return (left + length, buf[left..left + length].to_vec());
+fn acquire_slice(buf: &[u8], begin: &mut usize, length: usize) -> Vec<u8> {
+    let slice = buf[*begin..*begin + length].to_vec();
+    *begin += length;
+    slice
 }
 
 // allocate n bytes from the heap and return a pointer to the beginning of the allocated memory
@@ -91,52 +97,57 @@ fn modify(slice: &mut [u8], v: u16) {
     slice[3] = (slice[3] & !112) | imm3 << 4;
 }
 
-// load module from buf
-// for external symbols, dependencies are assume to have their definition
-// dependencies=none indicates no external symbol
+fn modify_pair(slice: &mut [u8], v: usize) {
+    modify(&mut slice[0..4], (v & 0xffff) as u16);
+    modify(&mut slice[4..8], (v >> 16) as u16);
+}
+/// given binary image and dependencies of loaded modules, load module from buf
+/// for external symbols, dependencies are assume to have their definition
+///
 pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
-    let header_prefix = &buf[..HEADER_LEN];
-    let p = header_prefix.as_ptr() as *const [u8; HEADER_LEN];
-    let header: ModuleHeader = unsafe { mem::transmute(*p) };
-    let (left, reloc) = acquire_slice(&buf, HEADER_LEN, header.n_reloc as usize * 8);
-    let (left, gfunc) = acquire_slice(&buf, left, header.n_funcs * 4);
-    let (left, raw_symt) = acquire_slice(&buf, left, header.l_symt);
-    let (left, mut text) = acquire_slice(&buf, left, header.l_text);
-    let (_left, data) = acquire_slice(&buf, left, header.l_data);
-    let mut symt = parse_symtable(&header.n_symbol, &raw_symt);
+    let header_ptr = (&buf[..HEADER_LEN]).as_ptr() as *const [u8; HEADER_LEN];
+    let header: ModuleHeader = unsafe { mem::transmute(*header_ptr) };
+    let mut begin = HEADER_LEN;
+    let reloc = acquire_slice(&buf, &mut begin, header.n_reloc as usize * 8);
+    let glb_funcs = acquire_slice(&buf, &mut begin, header.n_funcs * 4);
+    let raw_sym_table = acquire_slice(&buf, &mut begin, header.l_symt);
 
-    let total_len = header.l_text + 4 * header.n_table;
+    if begin % 4 > 0 {
+        begin += 4 - begin % 4;
+    }
+    let mut text = acquire_slice(&buf, &mut begin, header.l_text);
+    let data = acquire_slice(&buf, &mut begin, header.l_data);
+    let mut sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);
+
+    let total_len = header.l_text + header.l_data;
     let code_ptr = malloc(total_len, 4);
     let code = unsafe { slice::from_raw_parts_mut(code_ptr, total_len) };
 
-    let text_begin = 4 * header.n_table;
+    let text_begin = header.l_data;
     let text_begin_address = &code[text_begin] as *const u8 as usize;
+
     for i in 0..header.n_funcs {
         let p = i * 4;
-        let idx = usize::from_le_bytes([gfunc[p], gfunc[p + 1], gfunc[p + 2], gfunc[p + 3]]);
-        let entry = text_begin_address + symt[idx].index;
-        let w = 16 * i + 4;
-        modify(&mut text[w + 0..w + 4], (entry & 0xffff) as u16);
-        modify(&mut text[w + 4..w + 8], (entry >> 16) as u16);
+        let idx = usize::from_le_bytes(glb_funcs[p..p + 4].try_into().unwrap());
+        let entry = text_begin_address + sym_table[idx].index;
+        modify_pair(&mut text[4 * p + 4..4 * p + 12], entry);
     }
 
     let w = 16 * header.n_funcs;
     let r9 = code_ptr as usize;
-    modify(&mut text[w + 0..w + 4], (r9 & 0xffff) as u16);
-    modify(&mut text[w + 4..w + 8], (r9 >> 16) as u16);
+    modify_pair(&mut text[w..w + 8], r9);
+
     for i in 0..text.len() {
         code[text_begin + i] = text[i];
     }
 
     for i in 0..header.n_reloc {
-        let l = i * 8;
-        let r = l + 4;
-        let o1 = usize::from_le_bytes([reloc[l], reloc[l + 1], reloc[l + 2], reloc[l + 3]]);
-        let o2 = usize::from_le_bytes([reloc[r], reloc[r + 1], reloc[r + 2], reloc[r + 3]]);
-        let s = &symt[o2];
+        let o1 = usize::from_le_bytes(reloc[i * 8..i * 8 + 4].try_into().unwrap());
+        let o2 = usize::from_le_bytes(reloc[i * 8 + 4..i * 8 + 8].try_into().unwrap());
+        let s = &sym_table[o2];
+        dbg!(&s, o2);
         match s.s_type & 3 {
-            1 => {
-                // Resolve exported symbol
+            0 | 1 => {
                 if o1 < header.n_table.into() {
                     // symbol is a variable
                     let idx = s.index;
@@ -175,11 +186,16 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
 
     for i in 0..header.n_funcs {
         let p = i * 4;
-        let idx = usize::from_le_bytes([gfunc[p], gfunc[p + 1], gfunc[p + 2], gfunc[p + 3]]);
-        symt[idx].index = 16 * i + 1 + text_begin_address;
+        let idx = usize::from_le_bytes([
+            glb_funcs[p],
+            glb_funcs[p + 1],
+            glb_funcs[p + 2],
+            glb_funcs[p + 3],
+        ]);
+        sym_table[idx].index = 16 * i + 1 + text_begin_address;
     }
     Module {
-        symt: symt,
+        symt: sym_table,
         text_begin: text_begin_address,
         got_begin: r9,
     }
