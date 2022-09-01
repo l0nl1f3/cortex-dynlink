@@ -45,9 +45,7 @@ fn parse_symtable(n_symbol: &usize, data: &Vec<u8>) -> Vec<Symbol> {
                 q += 1;
             }
             q += 1;
-        } else {
-            s_name = String::from("$");
-        }
+        } 
         symbols.push(Symbol {
             s_type,
             index,
@@ -74,7 +72,7 @@ impl Module {
     }
 }
 
-fn acquire_slice(buf: &[u8], begin: &mut usize, length: usize) -> Vec<u8> {
+fn acquire_vec(buf: &[u8], begin: &mut usize, length: usize) -> Vec<u8> {
     let slice = buf[*begin..*begin + length].to_vec();
     *begin += length;
     slice
@@ -85,20 +83,23 @@ fn malloc(n: usize, align: usize) -> *mut u8 {
     unsafe { ALLOCATOR.alloc(Layout::from_size_align(n, align).unwrap()) }
 }
 
-///  Modify movt/movw immediate
 fn modify(slice: &mut [u8], v: u16) {
     let imm4 = (v >> 12) as u8;
     let i = (v >> 11 & 1) as u8;
     let imm3 = (v >> 8 & 7) as u8;
     let imm8 = (v & 255) as u8;
-    slice[0] = (slice[0] & !0xF) | imm4;
-    slice[1] = (slice[1] & !4) | i << 2;
+    slice[0] = slice[0] | imm4;
+    slice[1] = slice[1] | i << 2;
     slice[2] = imm8;
-    slice[3] = (slice[3] & !112) | imm3 << 4;
+    slice[3] = slice[3] | imm3 << 4;
 }
 
-/// Modify a pair of movt/movw's immediate
-/// 
+/// Given opcode of the following
+///     movw #0
+///     movt #0
+/// modify it to 
+///     movw v % 2^16
+///     movt v / 2^16
 fn modify_pair(slice: &mut [u8], v: usize) {
     modify(&mut slice[0..4], (v & 0xffff) as u16);
     modify(&mut slice[4..8], (v >> 16) as u16);
@@ -111,15 +112,15 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     let header_ptr = (&buf[..HEADER_LEN]).as_ptr() as *const [u8; HEADER_LEN];
     let header: ModuleHeader = unsafe { mem::transmute(*header_ptr) };
     let mut begin = HEADER_LEN;
-    let relocs = acquire_slice(&buf, &mut begin, header.n_reloc as usize * 8);
-    let glb_funcs = acquire_slice(&buf, &mut begin, header.n_funcs * 4);
-    let raw_sym_table = acquire_slice(&buf, &mut begin, header.l_symt);
+    let relocs = acquire_vec(&buf, &mut begin, header.n_reloc as usize * 8);
+    let glb_funcs = acquire_vec(&buf, &mut begin, header.n_funcs * 4);
+    let raw_sym_table = acquire_vec(&buf, &mut begin, header.l_symt);
 
     if begin % 4 > 0 {
         begin += 4 - begin % 4;
     }
-    let text = acquire_slice(&buf, &mut begin, header.l_text);
-    let data = acquire_slice(&buf, &mut begin, header.l_data);
+    let text = acquire_vec(&buf, &mut begin, header.l_text);
+    let data = acquire_vec(&buf, &mut begin, header.l_data);
     let mut sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);
 
     let allocated_text_ptr = malloc(header.l_text, 4);
