@@ -129,6 +129,7 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
 
     let allocated_data_ptr = malloc(header.l_data, 4);
     let allocated_data = unsafe { slice::from_raw_parts_mut(allocated_data_ptr, header.l_data) };
+    allocated_data.copy_from_slice(&data);
 
     let text_begin_address = allocated_text_ptr as usize;
     let data_begin_address = allocated_data_ptr as usize;
@@ -149,13 +150,7 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
         let sym = &sym_table[symt_idx];
         match sym.s_type & 3 {
             0 | 1 => {
-                if offset < header.n_table.into() {
-                    // symbol is a variable
-                    let idx = sym.index;
-                    for j in 0..4 {
-                        allocated_data[idx + j] = data[idx + j];
-                    }
-                } else {
+                if sym.s_type > 3 {
                     // symbol is a function
                     let loc = offset;
                     let entry = (sym.index + text_begin_address).to_le_bytes();
@@ -167,13 +162,15 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
             2 => {
                 // Resolve external symbol
                 dbg!(&sym.s_name);
-                if let Some(ref dependencies) = dependencies {
-                    for dependency in dependencies {
-                        let symbol = dependency.get_symbol(&sym.s_name);
-                        if let Some(symbol) = symbol {
-                            let entry = symbol.index.to_le_bytes();
-                            for j in 0..4 {
-                                allocated_text[offset + j] = entry[j];
+                if sym.s_type > 3 {
+                    if let Some(ref dependencies) = dependencies {
+                        for dependency in dependencies {
+                            let symbol = dependency.get_symbol(&sym.s_name);
+                            if let Some(symbol) = symbol {
+                                let entry = symbol.index.to_le_bytes();
+                                for j in 0..4 {
+                                    allocated_text[offset + j] = entry[j];
+                                }
                             }
                         }
                     }
