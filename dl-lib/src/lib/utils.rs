@@ -64,7 +64,7 @@ const HEADER_LEN: usize = mem::size_of::<ModuleHeader>();
 pub struct Module {
     pub symt: Vec<Symbol>,
     pub text_begin: usize,
-    pub got_begin: usize,
+    pub data_begin: usize,
 }
 
 impl Module {
@@ -80,12 +80,12 @@ fn acquire_slice(buf: &[u8], begin: &mut usize, length: usize) -> Vec<u8> {
     slice
 }
 
-// allocate n bytes from the heap and return a pointer to the beginning of the allocated memory
+/// allocate n bytes from the heap and return a pointer to the beginning of the allocated memory
 fn malloc(n: usize, align: usize) -> *mut u8 {
     unsafe { ALLOCATOR.alloc(Layout::from_size_align(n, align).unwrap()) }
 }
 
-// Modify movt/movw immediate
+///  Modify movt/movw immediate
 fn modify(slice: &mut [u8], v: u16) {
     let imm4 = (v >> 12) as u8;
     let i = (v >> 11 & 1) as u8;
@@ -97,10 +97,13 @@ fn modify(slice: &mut [u8], v: u16) {
     slice[3] = (slice[3] & !112) | imm3 << 4;
 }
 
+/// Modify a pair of movt/movw's immediate
+/// 
 fn modify_pair(slice: &mut [u8], v: usize) {
     modify(&mut slice[0..4], (v & 0xffff) as u16);
     modify(&mut slice[4..8], (v >> 16) as u16);
 }
+
 /// given binary image and dependencies of loaded modules, load module from buf
 /// for external symbols, dependencies are assume to have their definition
 ///
@@ -108,71 +111,68 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     let header_ptr = (&buf[..HEADER_LEN]).as_ptr() as *const [u8; HEADER_LEN];
     let header: ModuleHeader = unsafe { mem::transmute(*header_ptr) };
     let mut begin = HEADER_LEN;
-    let reloc = acquire_slice(&buf, &mut begin, header.n_reloc as usize * 8);
+    let relocs = acquire_slice(&buf, &mut begin, header.n_reloc as usize * 8);
     let glb_funcs = acquire_slice(&buf, &mut begin, header.n_funcs * 4);
     let raw_sym_table = acquire_slice(&buf, &mut begin, header.l_symt);
 
     if begin % 4 > 0 {
         begin += 4 - begin % 4;
     }
-    let mut text = acquire_slice(&buf, &mut begin, header.l_text);
+    let text = acquire_slice(&buf, &mut begin, header.l_text);
     let data = acquire_slice(&buf, &mut begin, header.l_data);
     let mut sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);
 
-    let total_len = header.l_text + header.l_data;
-    let code_ptr = malloc(total_len, 4);
-    let code = unsafe { slice::from_raw_parts_mut(code_ptr, total_len) };
+    let allocated_text_ptr = malloc(header.l_text, 4);
+    let allocated_text = unsafe { slice::from_raw_parts_mut(allocated_text_ptr, header.l_text) };
+    allocated_text.copy_from_slice(&text);
 
-    let text_begin = header.l_data;
-    let text_begin_address = &code[text_begin] as *const u8 as usize;
+    let allocated_data_ptr = malloc(header.l_data, 4);
+    let allocated_data = unsafe { slice::from_raw_parts_mut(allocated_data_ptr, header.l_data) };
 
+    let text_begin_address = allocated_text_ptr as usize;
+    let data_begin_address = allocated_data_ptr as usize;
     for i in 0..header.n_funcs {
         let p = i * 4;
         let idx = usize::from_le_bytes(glb_funcs[p..p + 4].try_into().unwrap());
         let entry = text_begin_address + sym_table[idx].index;
-        modify_pair(&mut text[4 * p + 4..4 * p + 12], entry);
+        modify_pair(&mut allocated_text[4 * p + 4..4 * p + 12], entry);
     }
 
     let w = 16 * header.n_funcs;
-    let r9 = code_ptr as usize;
-    modify_pair(&mut text[w..w + 8], r9);
+    modify_pair(&mut allocated_text[w..w + 8], data_begin_address);
 
-    for i in 0..text.len() {
-        code[text_begin + i] = text[i];
-    }
 
     for i in 0..header.n_reloc {
-        let o1 = usize::from_le_bytes(reloc[i * 8..i * 8 + 4].try_into().unwrap());
-        let o2 = usize::from_le_bytes(reloc[i * 8 + 4..i * 8 + 8].try_into().unwrap());
-        let s = &sym_table[o2];
-        dbg!(&s, o2);
-        match s.s_type & 3 {
+        let offset = usize::from_le_bytes(relocs[i * 8..i * 8 + 4].try_into().unwrap());
+        let symt_idx = usize::from_le_bytes(relocs[i * 8 + 4..i * 8 + 8].try_into().unwrap());
+        let sym = &sym_table[symt_idx];
+        match sym.s_type & 3 {
             0 | 1 => {
-                if o1 < header.n_table.into() {
+                if offset < header.n_table.into() {
                     // symbol is a variable
-                    let idx = s.index;
+                    let idx = sym.index;
                     for j in 0..4 {
-                        code[idx + j] = data[idx + j];
+                        allocated_data[idx + j] = data[idx + j];
                     }
                 } else {
                     // symbol is a function
-                    let loc = text_begin + o1;
-                    let data = (s.index + text_begin_address).to_le_bytes();
+                    let loc = offset;
+                    let entry = (sym.index + text_begin_address).to_le_bytes();
                     for j in 0..4 {
-                        code[loc + j] = data[j];
+                        allocated_text[loc + j] = entry[j];
                     }
                 }
             }
             2 => {
                 // Resolve external symbol
-                dbg!(&s.s_name);
+                dbg!(&sym.s_name);
                 if let Some(ref dependencies) = dependencies {
                     for dependency in dependencies {
-                        let symbol = dependency.get_symbol(&s.s_name);
+                        let symbol = dependency.get_symbol(&sym.s_name);
                         if let Some(symbol) = symbol {
-                            let data = symbol.index.to_le_bytes();
+                            let entry = symbol.index.to_le_bytes();
                             for j in 0..4 {
-                                code[text_begin + o1 + j] = data[j];
+                                allocated_text[offset + j] = entry[j];
                             }
                         }
                     }
@@ -186,31 +186,26 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
 
     for i in 0..header.n_funcs {
         let p = i * 4;
-        let idx = usize::from_le_bytes([
-            glb_funcs[p],
-            glb_funcs[p + 1],
-            glb_funcs[p + 2],
-            glb_funcs[p + 3],
-        ]);
+        let idx = usize::from_le_bytes(glb_funcs[p..p + 4].try_into().unwrap());
         sym_table[idx].index = 16 * i + 1 + text_begin_address;
     }
     Module {
         symt: sym_table,
         text_begin: text_begin_address,
-        got_begin: r9,
+        data_begin: data_begin_address,
     }
 }
 
-// dl_entry_by_name: find the address of function by name
+/// dl_entry_by_name: find the address of function by name
 pub fn dl_entry_by_name(module: &Module, name: &String) -> usize {
     module.get_symbol(name).expect("Symbol not found").index
 }
 
-// dl_val_by_bame: find the value of variable by name, return value in little endian bytes
+/// dl_val_by_bame: find the value of variable by name, return value in little endian bytes
 pub fn dl_val_by_name(module: &Module, name: &String, bytes: usize) -> Vec<u8> {
     let offset = module.get_symbol(name).expect("Symbol not found").index;
     unsafe {
-        let p = module.got_begin as *const u8;
+        let p = module.data_begin as *const u8;
         let mut v: Vec<u8> = Vec::new();
         for j in 0..bytes {
             v.push(*p.offset((offset + j) as isize));
