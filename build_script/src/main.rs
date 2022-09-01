@@ -101,15 +101,16 @@ fn link_objects(objs: &Vec<String>) {
 /// The image has the following layout, numbers have width=4 and are in little-endian order
 ///
 /// num_global_functions, num_tables, num_relocs, raw_symbol_table_length
-/// code section length, data section length, bss section length
+/// code section length, data section length, bss section length, num_symbols
 /// func1's index in symbol table
 /// func2's index in symbol table
 /// ...
 /// reloc1 offset, reloc1 index in symbol table
 /// reloc2 offset, reloc2 index in symbol table
 /// ...
-/// symbol1 index in symbol names, symbol1 address
-/// symbol2 index in symbol names, symbol2 address
+/// Symbol Table:
+///     symbol1 index in symbol names, symbol1 address
+///     symbol2 index in symbol names, symbol2 address
 /// ...
 /// symbol names = symbol1.name 0 symbol2.name 0 ...
 /// data section
@@ -246,7 +247,7 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
             .collect::<Vec<_>>(),
     );
 
-    let mut sym_table_len = 0;
+    let mut flat_sym_names_len = 0;
     // Write Symbol table
     for (i, sym) in sym_names.iter().enumerate() {
         if i > 0 {
@@ -266,21 +267,19 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
                 address_offset = 0;
             }
             address -= address_offset;
-            let x = (type_data << 28) | (sym_table_len as u32);
-            if (type_data & 3) == 0 {
-                address = 0;
-            } else {
-                sym_table_len += sym.len() + 1;
+            let x = (type_data << 28) | (flat_sym_names_len as u32);
+            if (type_data & 3) != 0 {
+                flat_sym_names_len += sym.len() + 1;
             }
             image.extend(&x.to_le_bytes()[0..4]);
             image.extend(&address.to_le_bytes()[0..4]);
         } else {
             // module name, reserved
-            let x = (3 << 28) | (sym_table_len);
+            let x = (3 << 28) | (flat_sym_names_len);
             let add = 0i32;
             image.extend(&x.to_le_bytes()[0..4]);
             image.extend(&add.to_le_bytes()[0..4]);
-            sym_table_len += sym.len() + 1;
+            flat_sym_names_len += sym.len() + 1;
         }
     }
 
