@@ -109,14 +109,14 @@ fn link_objects(objs: &Vec<String>) {
 /// reloc2 offset, reloc2 index in symbol table
 /// ...
 /// Symbol Table:
-///     symbol1 index in symbol names, symbol1 address
-///     symbol2 index in symbol names, symbol2 address
+///     symbol1 index in flat symbol names, symbol1 address
+///     symbol2 index in flat symbol names, symbol2 address
 /// ...
-/// symbol names = symbol1.name 0 symbol2.name 0 ...
+/// flat symbol names = symbol1.name 0 symbol2.name 0 ...
 /// data section
 /// code section
 /// bss section
-/// 
+///
 fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Error>> {
     let bin_data = fs::read(obj)?;
     let obj_file = object::File::parse(&*bin_data)?;
@@ -168,11 +168,9 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     let func_reloc_names: HashSet<_> = functions.iter().map(|func| func.name.clone()).collect();
     let num_table = var_reloc_names.len();
     let num_relocs = num_table + functions.len();
-
     let mut image: Vec<u8> = Vec::new();
 
     let mut sym_names: Vec<String> = Vec::new();
-    sym_names.push(String::from("module"));
     // Symbol Table: process names
     for (k, v) in &type_by_name {
         // exclude unused local symbol
@@ -187,8 +185,7 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     let flat_sym_names: Vec<_> = sym_names
         .iter()
         .flat_map(|name| {
-            if let Some(SymbolType::External) | Some(SymbolType::Exported) | None =
-                type_by_name.get(name)
+            if let Some(SymbolType::External) | Some(SymbolType::Exported) = type_by_name.get(name)
             {
                 format!("{}\0", name).as_bytes().to_vec()
             } else {
@@ -204,7 +201,6 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
         .map(|(idx, name)| (name.clone(), idx as u32))
         .collect();
 
-    
     image.extend(&glb_funcs.len().to_le_bytes()[0..4]);
     image.extend(&num_table.to_le_bytes()[0..4]);
     image.extend(&num_relocs.to_le_bytes()[0..4]);
@@ -224,11 +220,11 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
                 offset = reloc.r_offset;
             }
             RelocationType::MOVT_BREL => {
-                offset = num_table;
-                num_table += 1;
                 if hash_set.contains(&reloc.name) {
                     continue;
                 }
+                offset = num_table;
+                num_table += 1;
                 hash_set.insert(reloc.name.clone());
             }
             _ => {
@@ -249,38 +245,31 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
 
     let mut flat_sym_names_len = 0;
     // Write Symbol table
-    for (i, sym) in sym_names.iter().enumerate() {
-        if i > 0 {
-            let mut type_data = match type_by_name[sym] {
-                SymbolType::Local => 0,
-                SymbolType::Exported => 1,
-                SymbolType::External => 2,
-            };
-            let mut address = address_by_name[sym];
-            let mut address_offset = code_section.len() as u64;
-            if type_data == 2 {
-                address_offset = 0;
-            }
-            // if sym is a function
-            if let Some(SectionIndex(1)) = section_by_name.get(sym) {
-                type_data += 4;
-                address_offset = 0;
-            }
-            address -= address_offset;
-            let x = (type_data << 28) | (flat_sym_names_len as u32);
-            if (type_data & 3) != 0 {
-                flat_sym_names_len += sym.len() + 1;
-            }
-            image.extend(&x.to_le_bytes()[0..4]);
-            image.extend(&address.to_le_bytes()[0..4]);
-        } else {
-            // module name, reserved
-            let x = (3 << 28) | (flat_sym_names_len);
-            let add = 0i32;
-            image.extend(&x.to_le_bytes()[0..4]);
-            image.extend(&add.to_le_bytes()[0..4]);
+    for sym in &sym_names {
+        dbg!(sym);
+        let mut type_data = match type_by_name[sym] {
+            SymbolType::Local => 0,
+            SymbolType::Exported => 1,
+            SymbolType::External => 2,
+        };
+        let mut address = address_by_name[sym];
+        let mut address_offset = code_section.len() as u64;
+        // if sym is external, set offset=0
+        if type_data == 2 {
+            address_offset = 0;
+        }
+        // if sym is a function
+        if let Some(SectionIndex(1)) = section_by_name.get(sym) {
+            type_data += 4;
+            address_offset = 0;
+        }
+        address -= address_offset;
+        let x = (type_data << 28) | (flat_sym_names_len as u32);
+        if (type_data & 3) != 0 {
             flat_sym_names_len += sym.len() + 1;
         }
+        image.extend(&x.to_le_bytes()[0..4]);
+        image.extend(&address.to_le_bytes()[0..4]);
     }
 
     image.extend(flat_sym_names);
