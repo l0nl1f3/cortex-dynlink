@@ -60,7 +60,7 @@ const HEADER_LEN: usize = mem::size_of::<ModuleHeader>();
 
 #[derive(Debug, Clone)]
 pub struct Module {
-    pub symt: Vec<Symbol>,
+    pub sym_table: Vec<Symbol>,
     pub text_begin: usize,
     pub data_begin: usize,
 }
@@ -68,7 +68,7 @@ pub struct Module {
 impl Module {
     // search symbol by name
     fn get_symbol(&self, name: &str) -> Option<&Symbol> {
-        self.symt.iter().find(|s| s.s_name == name)
+        self.sym_table.iter().find(|s| s.s_name == name)
     }
 }
 
@@ -105,7 +105,7 @@ fn modify_pair(slice: &mut [u8], v: usize) {
     modify(&mut slice[4..8], (v >> 16) as u16);
 }
 
-/// given binary image and dependencies of loaded modules, load module from buf
+/// Given binary image and dependencies of loaded modules, load module from buf
 /// for external symbols, dependencies are assume to have their definition
 ///
 pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
@@ -187,18 +187,18 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
         sym_table[idx].index = 16 * i + 1 + text_begin;
     }
     Module {
-        symt: sym_table,
+        sym_table,
         text_begin,
         data_begin,
     }
 }
 
-/// given symbol name and the module it belongs to, returns the entry address of function
+/// Given symbol name and the module it belongs to, returns the entry address of function
 pub fn dl_entry_by_name(module: &Module, name: &String) -> usize {
     module.get_symbol(name).expect("Symbol not found").index
 }
 
-/// given symbol name (whose type is T) and the module it belongs to
+/// Given symbol name (whose type is T) and the module it belongs to
 /// given function to convert little-endian bytes to T
 /// return a copy to the symbol
 pub fn dl_val_by_name<T, F>(module: &Module, name: &String, bytes_to_t: F) -> T
