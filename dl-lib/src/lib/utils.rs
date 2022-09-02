@@ -10,7 +10,6 @@ use crate::ALLOCATOR;
 #[derive(Debug)]
 pub struct ModuleHeader {
     pub n_funcs: usize,
-    pub n_table: usize,
     pub n_reloc: usize,
     pub l_symt: usize,
     pub l_text: usize,
@@ -116,9 +115,6 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     let glb_funcs = acquire_vec(&buf, &mut begin, header.n_funcs * 4);
     let raw_sym_table = acquire_vec(&buf, &mut begin, header.l_symt);
 
-    if begin % 4 > 0 {
-        begin += 4 - begin % 4;
-    }
     let text = acquire_vec(&buf, &mut begin, header.l_text);
     let data = acquire_vec(&buf, &mut begin, header.l_data);
     let mut sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);

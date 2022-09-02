@@ -167,7 +167,6 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     });
     let var_reloc_names: HashSet<_> = variables.iter().map(|var| var.name.clone()).collect();
     let func_reloc_names: HashSet<_> = functions.iter().map(|func| func.name.clone()).collect();
-    let num_table = var_reloc_names.len();
     let num_relocs = functions.len();
     let mut image: Vec<u8> = Vec::new();
 
@@ -203,7 +202,6 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
         .collect();
 
     image.extend(&glb_funcs.len().to_le_bytes()[0..4]);
-    image.extend(&num_table.to_le_bytes()[0..4]);
     image.extend(&num_relocs.to_le_bytes()[0..4]);
     image.extend(&sym_table_len.to_le_bytes()[0..4]);
     image.extend(&code_section.len().to_le_bytes()[0..4]);
@@ -264,10 +262,6 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     }
 
     image.extend(flat_sym_names);
-
-    if image.len() % 4 != 0 {
-        image.extend(vec![0; 4 - image.len() % 4]);
-    }
     image.extend(code_section);
     image.extend(data_section);
     image.extend(bss_section);
