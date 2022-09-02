@@ -103,7 +103,11 @@ fn modify_pair(slice: &mut [u8], v: usize) {
 
 /// Given binary image and dependencies of loaded modules, load module from buf
 /// for external symbols, dependencies are assume to have their definition
-///
+/// This function consist of the following steps
+/// 1. copy code section and data section to the heap and record both section address in the Module structure 
+/// 2. modify the trampolines to correct runtime addresses
+/// 3. apply function relocations
+/// 4. modify the entry in symbol table to redirect external function calls
 pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     let header_ptr = (&buf[..HEADER_LEN]).as_ptr() as *const [u8; HEADER_LEN];
     let header: ModuleHeader = unsafe { mem::transmute(*header_ptr) };
