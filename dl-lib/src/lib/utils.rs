@@ -34,6 +34,7 @@ fn parse_symtable(n_symbol: &usize, data: &Vec<u8>) -> Vec<Symbol> {
         let n_pos = (x & !(7 << 28)) as usize;
         // let s_name be the String between q and next 0 in data
         let mut s_name = String::new();
+        // local varable needs no name
         if s_type & 3 != 0 {
             let mut q = 8 * *n_symbol + n_pos;
             while data[q] != 0 {
@@ -96,13 +97,13 @@ fn modify(slice: &mut [u8], v: u16) {
 ///     movw v % 2^16
 ///     movt v / 2^16
 fn modify_pair(slice: &mut [u8], v: usize) {
-    modify(&mut slice[0..4], (v & 0xffff) as u16);
-    modify(&mut slice[4..8], (v >> 16) as u16);
+    modify(&mut slice[0..4], (v & 0xffff) as u16); // movw
+    modify(&mut slice[4..8], (v >> 16) as u16); // movt
 }
 
 /// Given binary image and dependencies of loaded modules, load module from buf
 /// for external symbols, dependencies are assume to have their definition
-/// 
+///
 pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     let header_ptr = (&buf[..HEADER_LEN]).as_ptr() as *const [u8; HEADER_LEN];
     let header: ModuleHeader = unsafe { mem::transmute(*header_ptr) };
