@@ -105,8 +105,9 @@ fn link_objects(objs: &Vec<String>) {
 /// func1's index in symbol table
 /// func2's index in symbol table
 /// ...
-/// reloc1 offset, reloc1 index in symbol table
-/// reloc2 offset, reloc2 index in symbol table
+/// Relocation table (functions)
+///     reloc1 offset, reloc1 index in symbol table
+///     reloc2 offset, reloc2 index in symbol table
 /// ...
 /// Symbol Table:
 ///     symbol1 index in flat symbol names, symbol1 address
@@ -158,16 +159,16 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     // switch to low-level read api, something not right in the unified read.
     let vec_relocations = relocations::get_known_relocations(obj).unwrap();
     let (variables, functions): (_, Vec<_>) = vec_relocations.iter().partition(|x| {
-        if let RelocationType::MOVT_BREL | RelocationType::MOVW_BREL_NC = x.r_type {
-            true
-        } else {
+        if let RelocationType::ABS32 = x.r_type {
             false
+        } else {
+            true
         }
     });
     let var_reloc_names: HashSet<_> = variables.iter().map(|var| var.name.clone()).collect();
     let func_reloc_names: HashSet<_> = functions.iter().map(|func| func.name.clone()).collect();
     let num_table = var_reloc_names.len();
-    let num_relocs = num_table + functions.len();
+    let num_relocs = functions.len();
     let mut image: Vec<u8> = Vec::new();
 
     let mut sym_names: Vec<String> = Vec::new();
@@ -210,27 +211,10 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     image.extend(&bss_section.len().to_le_bytes()[0..4]);
     image.extend(&sym_names.len().to_le_bytes()[0..4]);
 
-    let mut hash_set: HashSet<String> = HashSet::new();
     // Write Relocation table
-    let mut num_table = 0;
-    for reloc in &vec_relocations {
-        let offset;
-        match reloc.r_type {
-            RelocationType::ABS32 => {
-                offset = reloc.r_offset;
-            }
-            RelocationType::MOVT_BREL => {
-                if hash_set.contains(&reloc.name) {
-                    continue;
-                }
-                offset = num_table;
-                num_table += 1;
-                hash_set.insert(reloc.name.clone());
-            }
-            _ => {
-                continue;
-            }
-        }
+    
+    for reloc in &functions {
+        let offset = reloc.r_offset;
         let idx = sym_table_idx.get(&reloc.name).unwrap();
         image.extend(&offset.to_le_bytes()[0..4]);
         image.extend(&idx.to_le_bytes()[0..4]);
