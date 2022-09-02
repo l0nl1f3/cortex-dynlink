@@ -151,7 +151,9 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
         };
         if let Some(symbol_type) = symbol_type {
             type_by_name.insert(name.clone(), symbol_type);
-            section_by_name.insert(name.clone(), symbol.section_index().unwrap());
+            if let Some(index) = symbol.section_index() {
+                section_by_name.insert(name.clone(), index);
+            }
             address_by_name.insert(name.clone(), symbol.address());
         }
     }
