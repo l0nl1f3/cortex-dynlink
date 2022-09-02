@@ -212,13 +212,20 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     image.extend(&sym_names.len().to_le_bytes()[0..4]);
 
     // Write Relocation table
-    
-    for reloc in &functions {
-        let offset = reloc.r_offset;
-        let idx = sym_table_idx.get(&reloc.name).unwrap();
-        image.extend(&offset.to_le_bytes()[0..4]);
-        image.extend(&idx.to_le_bytes()[0..4]);
-    }
+    image.extend(
+        functions
+            .iter()
+            .flat_map(|func| {
+                let offset = func.r_offset;
+                let idx = sym_table_idx[&func.name];
+                let mut reloc: Vec<u8> = Vec::new();
+                reloc.extend(&offset.to_le_bytes()[0..4]);
+                reloc.extend(&idx.to_le_bytes()[0..4]);
+                reloc
+            })
+            .collect::<Vec<_>>(),
+    );
+
     // Write every global function's index
     image.extend(
         glb_funcs
