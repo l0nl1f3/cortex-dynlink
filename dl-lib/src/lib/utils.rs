@@ -45,7 +45,7 @@ fn parse_symtable(n_symbol: &usize, data: &Vec<u8>) -> Vec<Symbol> {
                 q += 1;
             }
             q += 1;
-        } 
+        }
         symbols.push(Symbol {
             s_type,
             index,
@@ -97,7 +97,7 @@ fn modify(slice: &mut [u8], v: u16) {
 /// Given opcode of the following
 ///     movw #0
 ///     movt #0
-/// modify it to 
+/// modify it to
 ///     movw v % 2^16
 ///     movt v / 2^16
 fn modify_pair(slice: &mut [u8], v: usize) {
@@ -131,18 +131,18 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     let allocated_data = unsafe { slice::from_raw_parts_mut(allocated_data_ptr, header.l_data) };
     allocated_data.copy_from_slice(&data);
 
-    let text_begin_address = allocated_text_ptr as usize;
-    let data_begin_address = allocated_data_ptr as usize;
+    let text_begin = allocated_text_ptr as usize;
+    let data_begin = allocated_data_ptr as usize;
+
     for i in 0..header.n_funcs {
         let p = i * 4;
         let idx = usize::from_le_bytes(glb_funcs[p..p + 4].try_into().unwrap());
-        let entry = text_begin_address + sym_table[idx].index;
+        let entry = text_begin + sym_table[idx].index;
         modify_pair(&mut allocated_text[4 * p + 4..4 * p + 12], entry);
     }
 
     let w = 16 * header.n_funcs;
-    modify_pair(&mut allocated_text[w..w + 8], data_begin_address);
-
+    modify_pair(&mut allocated_text[w..w + 8], data_begin);
 
     for i in 0..header.n_reloc {
         let offset = usize::from_le_bytes(relocs[i * 8..i * 8 + 4].try_into().unwrap());
@@ -152,10 +152,9 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
             0 | 1 => {
                 if sym.s_type > 3 {
                     // symbol is a function
-                    let loc = offset;
-                    let entry = (sym.index + text_begin_address).to_le_bytes();
+                    let entry = (sym.index + text_begin).to_le_bytes();
                     for j in 0..4 {
-                        allocated_text[loc + j] = entry[j];
+                        allocated_text[offset + j] = entry[j];
                     }
                 }
             }
@@ -185,29 +184,35 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     for i in 0..header.n_funcs {
         let p = i * 4;
         let idx = usize::from_le_bytes(glb_funcs[p..p + 4].try_into().unwrap());
-        sym_table[idx].index = 16 * i + 1 + text_begin_address;
+        sym_table[idx].index = 16 * i + 1 + text_begin;
     }
     Module {
         symt: sym_table,
-        text_begin: text_begin_address,
-        data_begin: data_begin_address,
+        text_begin,
+        data_begin,
     }
 }
 
-/// dl_entry_by_name: find the address of function by name
+/// given symbol name and the module it belongs to, returns the entry address of function
 pub fn dl_entry_by_name(module: &Module, name: &String) -> usize {
     module.get_symbol(name).expect("Symbol not found").index
 }
 
-/// dl_val_by_bame: find the value of variable by name, return value in little endian bytes
-pub fn dl_val_by_name(module: &Module, name: &String, bytes: usize) -> Vec<u8> {
+/// given symbol name (whose type is T) and the module it belongs to
+/// given function to convert little-endian bytes to T
+/// return a copy to the symbol
+pub fn dl_val_by_name<T, F>(module: &Module, name: &String, bytes_to_t: F) -> T
+where
+    F: Fn(&[u8]) -> T,
+{
     let offset = module.get_symbol(name).expect("Symbol not found").index;
+    let size_of = mem::size_of::<T>();
     unsafe {
         let p = module.data_begin as *const u8;
         let mut v: Vec<u8> = Vec::new();
-        for j in 0..bytes {
+        for j in 0..size_of {
             v.push(*p.offset((offset + j) as isize));
         }
-        v
+        bytes_to_t(&v)
     }
 }

@@ -41,6 +41,18 @@ fn main() -> ! {
     let test_ptr = utils::dl_entry_by_name(&module, &String::from("test"));
     let test: fn(u8) -> bool = unsafe { mem::transmute(test_ptr as *const ()) };
     call_func_u8(test);
+    
+    dbg!(utils::dl_val_by_name(
+        &module,
+        &String::from("GLOBAL_8"),
+        |x| u8::from_le_bytes(x.try_into().unwrap())
+    ));
+
+    dbg!(utils::dl_val_by_name(
+        &module,
+        &String::from("GLOBAL_Y"),
+        |x| u32::from_le_bytes(x.try_into().unwrap())
+    ));
     loop {}
 }
 
@@ -85,12 +97,12 @@ fn test_extern() {
     dbg!(utils::dl_val_by_name(
         &call,
         &String::from("_ZN16extern_symbols_11A17h6accb27527811b1eE"),
-        4
+        |x| u32::from_le_bytes(x.try_into().unwrap())
     ));
     dbg!(utils::dl_val_by_name(
         &call,
         &String::from("_ZN16extern_symbols_11B17hbd6759c4ad0a21dbE"),
-        4
+        |x| u32::from_le_bytes(x.try_into().unwrap())
     ));
 
     loop {}
