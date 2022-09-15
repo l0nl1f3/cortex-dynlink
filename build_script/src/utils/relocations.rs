@@ -8,19 +8,15 @@ use std::fs;
 #[derive(Debug, Clone)]
 #[allow(non_camel_case_types)]
 pub enum RelocationType {
-    MOVW_BREL_NC,
-    MOVT_BREL,
     CALL,
-    ABS32,
+    GOT32,
     NONE,
 }
 
 fn get_relocation_type(r_type: u32) -> RelocationType {
     match r_type {
-        87 => RelocationType::MOVW_BREL_NC,
-        88 => RelocationType::MOVT_BREL,
+        26 => RelocationType::GOT32,
         10 => RelocationType::CALL,
-        2 => RelocationType::ABS32,
         _ => RelocationType::NONE,
         // panic!("Unknown relocation type")
     }
@@ -75,7 +71,7 @@ pub fn get_known_relocations(obj_path: &String) -> Result<Vec<Relocation>, Box<d
                     .unwrap();
 
                 let name = String::from_utf8(name.unwrap().to_vec()).unwrap();
-                
+                println!("name={}, type_val={}", name, relocation.r_type(endian));
                 // TODO: change fixed module
                 if !name.ends_with("module") {
                     vec_relocations.push(Relocation {
@@ -89,13 +85,11 @@ pub fn get_known_relocations(obj_path: &String) -> Result<Vec<Relocation>, Box<d
             }
         }
     }
+    // dbg!(&vec_relocations);
     return Ok(vec_relocations
         .into_iter()
         .filter(|r| {
-            if let RelocationType::MOVT_BREL
-            | RelocationType::MOVW_BREL_NC
-            | RelocationType::ABS32 = r.r_type
-            {
+            if let RelocationType::GOT32 = r.r_type {
                 true
             } else {
                 false

@@ -38,6 +38,7 @@ fn main() -> ! {
     unsafe { ALLOCATOR.init(cortex_m_rt::heap_start() as usize, heap_size) }
     let bytes = lib::binary::BUF;
     let module = utils::dl_load(bytes.to_vec(), None);
+    dbg!(&module);
     let test_ptr = utils::dl_entry_by_name(&module, "test");
     let test: fn(u8) -> bool = unsafe { mem::transmute(test_ptr as *const ()) };
     call_func_u8(test);

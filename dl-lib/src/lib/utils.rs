@@ -4,6 +4,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::{iter::zip, mem, slice};
 
 use crate::ALLOCATOR;
+use cortex_m_semihosting::hprintln;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -104,7 +105,7 @@ fn modify_pair(slice: &mut [u8], v: usize) {
 /// Given binary image and dependencies of loaded modules, load module from buf
 /// for external symbols, dependencies are assume to have their definition
 /// This function consist of the following steps
-/// 1. copy code section and data section to the heap and record both section address in the Module structure 
+/// 1. copy code section and data section to the heap and record both section address in the Module structure
 /// 2. modify the trampolines to correct runtime addresses
 /// 3. apply function relocations
 /// 4. modify the entry in symbol table to redirect external function calls
@@ -136,12 +137,16 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     let allocated_text = unsafe { slice::from_raw_parts_mut(allocated_text_ptr, header.l_text) };
     allocated_text.copy_from_slice(&text);
 
+    let allocated_got_ptr = malloc(header.n_reloc * 4, 4);
+    let allocated_got = unsafe { slice::from_raw_parts_mut(allocated_got_ptr, header.n_reloc * 4) };
+
     let allocated_data_ptr = malloc(header.l_data, 4);
     let allocated_data = unsafe { slice::from_raw_parts_mut(allocated_data_ptr, header.l_data) };
     allocated_data.copy_from_slice(&data);
 
     let text_begin = allocated_text_ptr as usize;
     let data_begin = allocated_data_ptr as usize;
+    let got_begin = allocated_got_ptr as usize;
 
     let trampo_entries: Vec<_> = (0..header.n_funcs).map(|i| 16 * i).collect();
 
@@ -156,17 +161,27 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     let common_trampo_entry = 16 * header.n_funcs;
     modify_pair(
         &mut allocated_text[common_trampo_entry..common_trampo_entry + 8],
-        data_begin,
+        got_begin,
     );
 
     for (offset, symt_idx) in relocs {
         let sym = &sym_table[symt_idx];
+        hprintln!("reloc target={}", sym.s_name);
         match sym.s_type & 3 {
             0 | 1 => {
                 // Exported / Local
-                let entry = (sym.index + text_begin).to_le_bytes();
+                let got_index =
+                    usize::from_le_bytes(allocated_text[offset..offset + 4].try_into().unwrap());
+                let entry = sym.index
+                    + if sym.s_type > 4 {
+                        text_begin
+                    } else {
+                        data_begin
+                    };
+                hprintln!("{}->{}", got_index, entry);
+                let entry = entry.to_le_bytes();
                 for j in 0..4 {
-                    allocated_text[offset + j] = entry[j];
+                    allocated_got[got_index + j] = entry[j];
                 }
             }
             2 => {
@@ -176,8 +191,11 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
                         let symbol = dependency.get_symbol(&sym.s_name);
                         if let Some(symbol) = symbol {
                             let entry = symbol.index.to_le_bytes();
+                            let got_index = usize::from_le_bytes(
+                                allocated_text[offset..offset + 4].try_into().unwrap(),
+                            );
                             for j in 0..4 {
-                                allocated_text[offset + j] = entry[j];
+                                allocated_got[got_index + j] = entry[j];
                             }
                         }
                     }

@@ -160,16 +160,9 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
 
     // switch to low-level read api, something not right in the unified read.
     let vec_relocations = relocations::get_known_relocations(obj).unwrap();
-    let (variables, functions): (_, Vec<_>) = vec_relocations.iter().partition(|x| {
-        if let RelocationType::ABS32 = x.r_type {
-            false
-        } else {
-            true
-        }
-    });
-    let var_reloc_names: HashSet<_> = variables.iter().map(|var| var.name.clone()).collect();
-    let func_reloc_names: HashSet<_> = functions.iter().map(|func| func.name.clone()).collect();
-    let num_relocs = functions.len();
+    let reloc_names: HashSet<_> = vec_relocations.iter().map(|var| var.name.clone()).collect();
+
+    let num_relocs = vec_relocations.len();
     let mut image: Vec<u8> = Vec::new();
 
     let mut sym_names: Vec<String> = Vec::new();
@@ -177,7 +170,7 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     for (k, v) in &type_by_name {
         // exclude unused local symbol
         // only used local symbols and external/exported symbols needs further processing
-        if var_reloc_names.contains(k) || func_reloc_names.contains(k) {
+        if reloc_names.contains(k) {
             sym_names.push(k.clone());
         } else if let SymbolType::External | SymbolType::Exported = v {
             sym_names.push(k.clone());
@@ -213,15 +206,17 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
 
     // Write Relocation table
     image.extend(
-        functions
+        vec_relocations
             .iter()
-            .flat_map(|func| {
-                let offset = func.r_offset;
-                let idx = sym_table_idx[&func.name];
-                let mut reloc: Vec<u8> = Vec::new();
-                reloc.extend(&offset.to_le_bytes()[0..4]);
-                reloc.extend(&idx.to_le_bytes()[0..4]);
-                reloc
+            .flat_map(|reloc| {
+                let offset = reloc.r_offset;
+                let idx = sym_table_idx[&reloc.name];
+                dbg!(&reloc.name, offset);
+                let mut reloc_entry: Vec<u8> = Vec::new();
+                // address to .word
+                reloc_entry.extend(&offset.to_le_bytes()[0..4]);
+                reloc_entry.extend(&idx.to_le_bytes()[0..4]);
+                reloc_entry
             })
             .collect::<Vec<_>>(),
     );
@@ -237,28 +232,24 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     let mut flat_sym_names_len = 0;
     // Write Symbol table
     for sym in &sym_names {
-        dbg!(sym);
-        let mut type_data = match type_by_name[sym] {
+        let type_data = match type_by_name[sym] {
             SymbolType::Local => 0,
             SymbolType::Exported => 1,
             SymbolType::External => 2,
         };
-        let mut address = address_by_name[sym];
-        let mut address_offset = code_section.len() as u64;
-        // if sym is external, set offset=0
-        if type_data == 2 {
-            address_offset = 0;
-        }
-        // if sym is a function
-        if let Some(SectionIndex(1)) = section_by_name.get(sym) {
-            type_data += 4;
-            address_offset = 0;
-        }
-        address -= address_offset;
+        let address_offset = if let Some(SectionIndex(1)) = section_by_name.get(sym) {
+            0
+        } else {
+            code_section.len()
+        };
+        let address = address_by_name[sym] as usize - address_offset;
+        // if its a variable, address equals code_section.len() + its index in datas * 4
+        // if its a function, address equals its entry, 0 for external symbols
         let x = (type_data << 28) | (flat_sym_names_len as u32);
-        if (type_data & 3) != 0 {
+        if type_data != 0 {
             flat_sym_names_len += sym.len() + 1;
         }
+        dbg!(sym, address);
         image.extend(&x.to_le_bytes()[0..4]);
         image.extend(&address.to_le_bytes()[0..4]);
     }
@@ -292,8 +283,8 @@ fn main() {
         .map(|path| path.replace(".o", "_pre.o"))
         .collect();
 
-    let mut linker_input_path = input_obj_paths;
-    linker_input_path.extend(trampoline_paths.into_iter());
+    let mut linker_input_path = trampoline_paths;
+    linker_input_path.extend(input_obj_paths.into_iter());
 
     link_objects(&linker_input_path);
 
