@@ -71,7 +71,6 @@ pub fn get_known_relocations(obj_path: &String) -> Result<Vec<Relocation>, Box<d
                     .unwrap();
 
                 let name = String::from_utf8(name.unwrap().to_vec()).unwrap();
-                println!("name={}, type_val={}", name, relocation.r_type(endian));
                 // TODO: change fixed module
                 if !name.ends_with("module") {
                     vec_relocations.push(Relocation {

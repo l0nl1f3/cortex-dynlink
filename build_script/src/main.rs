@@ -211,7 +211,6 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
             .flat_map(|reloc| {
                 let offset = reloc.r_offset;
                 let idx = sym_table_idx[&reloc.name];
-                dbg!(&reloc.name, offset);
                 let mut reloc_entry: Vec<u8> = Vec::new();
                 // address to .word
                 reloc_entry.extend(&offset.to_le_bytes()[0..4]);
@@ -231,28 +230,34 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
 
     let mut flat_sym_names_len = 0;
     // Write Symbol table
-    for sym in &sym_names {
-        let type_data = match type_by_name[sym] {
-            SymbolType::Local => 0,
-            SymbolType::Exported => 1,
-            SymbolType::External => 2,
-        };
-        let address_offset = if let Some(SectionIndex(1)) = section_by_name.get(sym) {
-            0
-        } else {
-            code_section.len()
-        };
-        let address = address_by_name[sym] as usize - address_offset;
-        // if its a variable, address equals code_section.len() + its index in datas * 4
-        // if its a function, address equals its entry, 0 for external symbols
-        let x = (type_data << 28) | (flat_sym_names_len as u32);
-        if type_data != 0 {
-            flat_sym_names_len += sym.len() + 1;
-        }
-        dbg!(sym, address);
-        image.extend(&x.to_le_bytes()[0..4]);
-        image.extend(&address.to_le_bytes()[0..4]);
-    }
+    image.extend(
+        sym_names
+            .iter()
+            .flat_map(|name| {
+                let type_data = match type_by_name[name] {
+                    SymbolType::Local => 0,
+                    SymbolType::Exported => 1,
+                    SymbolType::External => 2,
+                };
+                let addr_offset = if let Some(SectionIndex(1)) = section_by_name.get(name) {
+                    0
+                } else {
+                    code_section.len()
+                };
+                let addr = address_by_name[name] as usize - addr_offset;
+                // if its a variable, address equals code_section.len() + its index in datas * 4
+                // if its a function, address equals its entry, 0 for external symbols
+                let x = (type_data << 28) | (flat_sym_names_len as u32);
+                if type_data != 0 {
+                    flat_sym_names_len += name.len() + 1;
+                }
+                let mut sym_entry: Vec<u8> = Vec::new();
+                sym_entry.extend(&x.to_le_bytes()[0..4]);
+                sym_entry.extend(&addr.to_le_bytes()[0..4]);
+                sym_entry
+            })
+            .collect::<Vec<_>>(),
+    );
 
     image.extend(flat_sym_names);
     image.extend(code_section);
