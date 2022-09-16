@@ -100,7 +100,7 @@ fn link_objects(objs: &Vec<String>) {
 /// generate a binary image that can be parsed by dl-lib
 /// The image has the following layout, numbers have width=4 and are in little-endian order
 ///
-/// num_global_functions, num_tables, num_relocs, raw_symbol_table_length
+/// num_global_functions, num_relocs, raw_symbol_table_length
 /// code section length, data section length, bss section length, num_symbols
 /// func1's index in symbol table
 /// func2's index in symbol table
@@ -162,7 +162,6 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     let vec_relocations = relocations::get_known_relocations(obj).unwrap();
     let reloc_names: HashSet<_> = vec_relocations.iter().map(|var| var.name.clone()).collect();
 
-    let num_relocs = vec_relocations.len();
     let mut image: Vec<u8> = Vec::new();
 
     let mut sym_names: Vec<String> = Vec::new();
@@ -197,7 +196,7 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
         .collect();
 
     image.extend(&glb_funcs.len().to_le_bytes()[0..4]);
-    image.extend(&num_relocs.to_le_bytes()[0..4]);
+    image.extend(&vec_relocations.len().to_le_bytes()[0..4]);
     image.extend(&sym_table_len.to_le_bytes()[0..4]);
     image.extend(&code_section.len().to_le_bytes()[0..4]);
     image.extend(&data_section.len().to_le_bytes()[0..4]);
@@ -234,12 +233,13 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
         sym_names
             .iter()
             .flat_map(|name| {
-                let type_data = match type_by_name[name] {
+                let mut type_data = match type_by_name[name] {
                     SymbolType::Local => 0,
                     SymbolType::Exported => 1,
                     SymbolType::External => 2,
                 };
                 let addr_offset = if let Some(SectionIndex(1)) = section_by_name.get(name) {
+                    type_data += 4;
                     0
                 } else {
                     code_section.len()
@@ -248,7 +248,7 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
                 // if its a variable, address equals code_section.len() + its index in datas * 4
                 // if its a function, address equals its entry, 0 for external symbols
                 let x = (type_data << 28) | (flat_sym_names_len as u32);
-                if type_data != 0 {
+                if (type_data & 3) != 0 {
                     flat_sym_names_len += name.len() + 1;
                 }
                 let mut sym_entry: Vec<u8> = Vec::new();
