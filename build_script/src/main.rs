@@ -208,12 +208,10 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
         vec_relocations
             .iter()
             .flat_map(|reloc| {
-                let offset = reloc.r_offset;
-                let idx = sym_table_idx[&reloc.name];
                 let mut reloc_entry: Vec<u8> = Vec::new();
                 // address to .word
-                reloc_entry.extend(&offset.to_le_bytes()[0..4]);
-                reloc_entry.extend(&idx.to_le_bytes()[0..4]);
+                reloc_entry.extend(&reloc.r_offset.to_le_bytes()[0..4]);
+                reloc_entry.extend(&sym_table_idx[&reloc.name].to_le_bytes()[0..4]);
                 reloc_entry
             })
             .collect::<Vec<_>>(),
