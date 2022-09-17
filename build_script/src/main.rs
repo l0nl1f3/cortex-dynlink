@@ -231,22 +231,29 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
         sym_names
             .iter()
             .flat_map(|name| {
-                let mut type_data = match type_by_name[name] {
-                    SymbolType::Local => 0,
-                    SymbolType::Exported => 1,
-                    SymbolType::External => 2,
-                };
                 let addr_offset = if let Some(SectionIndex(1)) = section_by_name.get(name) {
-                    type_data += 4;
                     0
                 } else {
                     code_section.len()
                 };
-                let addr = address_by_name[name] as usize - addr_offset;
+                let addr = if let SymbolType::External = type_by_name[name] {
+                    0
+                } else {
+                    address_by_name[name] as usize - addr_offset
+                };
                 // if its a variable, address equals code_section.len() + its index in datas * 4
                 // if its a function, address equals its entry, 0 for external symbols
-                let x = (type_data << 28) | (flat_sym_names_len as u32);
-                if (type_data & 3) != 0 {
+                let type_data = match type_by_name[name] {
+                    SymbolType::Local => 0,
+                    SymbolType::Exported => 1,
+                    SymbolType::External => 2,
+                } + if let Some(SectionIndex(1)) = section_by_name.get(name) {
+                    4
+                } else {
+                    0
+                } << 28;
+                let x = type_data | (flat_sym_names_len as u32);
+                if let SymbolType::Exported | SymbolType::External = type_by_name[name] {
                     flat_sym_names_len += name.len() + 1;
                 }
                 let mut sym_entry: Vec<u8> = Vec::new();
