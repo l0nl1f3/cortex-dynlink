@@ -4,7 +4,6 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::{iter::zip, mem, slice};
 
 use crate::ALLOCATOR;
-use cortex_m_semihosting::hprintln;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -166,7 +165,6 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
 
     for (offset, symt_idx) in relocs {
         let sym = &sym_table[symt_idx];
-        // hprintln!("reloc target={},type={}", sym.s_name, sym.s_type);
         match sym.s_type & 3 {
             0 | 1 => {
                 // Exported / Local
@@ -185,7 +183,6 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
             }
             2 => {
                 // External
-                // hprintln!("{}", sym.s_name);
                 if let Some(ref dependencies) = dependencies {
                     for dependency in dependencies {
                         let symbol = dependency.get_symbol(&sym.s_name);
@@ -194,7 +191,6 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
                             let got_index = usize::from_le_bytes(
                                 allocated_text[offset..offset + 4].try_into().unwrap(),
                             );
-                            hprintln!("{}->{}", got_index, symbol.index);
                             for j in 0..4 {
                                 allocated_got[got_index + j] = entry[j];
                             }

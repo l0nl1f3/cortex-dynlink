@@ -36,19 +36,19 @@ fn main() -> ! {
     let heap_end = 0x2001_8000;
     let heap_size = heap_end - heap_start;
     unsafe { ALLOCATOR.init(cortex_m_rt::heap_start() as usize, heap_size) }
-    // let bytes = lib::binary::BUF;
-    // let module = utils::dl_load(bytes.to_vec(), None);
-    // let test_ptr = utils::dl_entry_by_name(&module, "test");
-    // let test: fn(u8) -> bool = unsafe { mem::transmute(test_ptr as *const ()) };
-    // call_func_u8(test);
+    let bytes = lib::binary::BUF;
+    let module = utils::dl_load(bytes.to_vec(), None);
+    let test_ptr = utils::dl_entry_by_name(&module, "test");
+    let test: fn(u8) -> bool = unsafe { mem::transmute(test_ptr as *const ()) };
+    call_func_u8(test);
 
-    // dbg!(utils::dl_val_by_name(&module, "GLOBAL_X", |x| {
-    //     u8::from_le_bytes(x.try_into().unwrap())
-    // }));
+    dbg!(utils::dl_val_by_name(&module, "GLOBAL_X", |x| {
+        u8::from_le_bytes(x.try_into().unwrap())
+    }));
 
-    // dbg!(utils::dl_val_by_name(&module, "GLOBAL_Y", |x| {
-    //     u32::from_le_bytes(x.try_into().unwrap())
-    // }));
+    dbg!(utils::dl_val_by_name(&module, "GLOBAL_Y", |x| {
+        u32::from_le_bytes(x.try_into().unwrap())
+    }));
 
     test_extern();
     loop {}
@@ -79,9 +79,7 @@ fn test_extern() {
         0, 0, 10, 0, 0, 0, 31, 0, 0, 0,
     ];
     let def = utils::dl_load(bin_def, None);
-    dbg!(&def);
     let call = utils::dl_load(bin_call, Some(vec![def]));
-    dbg!(&call);
     let test_ptr = utils::dl_entry_by_name(&call, "test");
     let test: fn(u8) -> bool = unsafe { mem::transmute(test_ptr as *const ()) };
     call_func_u8(test);
