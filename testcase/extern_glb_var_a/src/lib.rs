@@ -1,12 +1,11 @@
 #![no_main]
 #![no_std]
 
-#[no_mangle] 
-pub static mut GLOBAL_X:u8 = 20;
-#[no_mangle]
-pub static mut GLOBAL_Y:u32 = 31;
-#[no_mangle]
-pub static mut GLOBAL_8:u8 = 10;
+extern {
+    pub static mut GLOBAL_X:u8;
+    pub static mut GLOBAL_Y:u32;
+    pub static mut GLOBAL_8:u8;
+}
 
 fn inc(add:u8) {
     unsafe {

@@ -1,5 +1,5 @@
 [package]
-name = "ex_3"
+name = "extern_glb_var_b"
 version = "0.1.0"
 edition = "2021"
 

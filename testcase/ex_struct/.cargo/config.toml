@@ -1,0 +1,11 @@
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+
+rustflags = [
+  "-C", "relocation-model=ropi-rwpi",
+  "-C", "codegen-units=1",
+  "-C", "target-feature=+long-calls",
+  "--emit=obj"
+]
+
+[build]
+target = "thumbv7em-none-eabi"
