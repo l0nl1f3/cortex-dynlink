@@ -2,6 +2,7 @@ extern crate alloc;
 use alloc::{string::String, vec::Vec};
 use core::alloc::{GlobalAlloc, Layout};
 use core::{iter::zip, mem, slice};
+use cortex_m_semihosting::dbg;
 
 use crate::ALLOCATOR;
 
@@ -101,14 +102,18 @@ fn modify_pair(slice: &mut [u8], v: usize) {
     modify(&mut slice[4..8], (v >> 16) as u16); // movt
 }
 
-/// Given binary image and dependencies of loaded modules, load module from buf
+/// Given binary image and dependencies of loaded modules, load module from address p_start to p_end
 /// for external symbols, dependencies are assume to have their definition
 /// This function consist of the following steps
 /// 1. copy code section and data section to the heap and record both section address in the Module structure
 /// 2. modify the trampolines to correct runtime addresses
 /// 3. apply function relocations
 /// 4. modify the entry in symbol table to redirect external function calls
-pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
+///
+///  The procedure will place GOT, data section and trampoline codes (function indirections) in the RAM
+///  Other codes won't be copied to the RAM
+pub fn dl_load(p_start: *const u8, p_end: *const u8, dependencies: Option<Vec<Module>>) -> Module {
+    let buf = unsafe { slice::from_raw_parts(p_start, p_end as usize - p_start as usize) };
     let header_ptr = (&buf[..HEADER_LEN]).as_ptr() as *const [u8; HEADER_LEN];
     let header: ModuleHeader = unsafe { mem::transmute(*header_ptr) };
     let mut begin = HEADER_LEN;
@@ -128,13 +133,18 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
 
     let raw_sym_table = acquire_vec(&buf, &mut begin, header.l_symt);
     let mut sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);
-
+    if begin % 4 != 0 {
+        begin += 4 - begin % 4;
+    }
+    let flash_text_ptr = unsafe { p_start.offset(begin.try_into().unwrap()) };
     let text = acquire_vec(&buf, &mut begin, header.l_text);
     let data = acquire_vec(&buf, &mut begin, header.l_data);
 
-    let allocated_text_ptr = malloc(header.l_text, 4);
-    let allocated_text = unsafe { slice::from_raw_parts_mut(allocated_text_ptr, header.l_text) };
-    allocated_text.copy_from_slice(&text);
+    let trampo_text = text[0..16 * (header.n_funcs + 1)].to_vec();
+    let allocated_text_ptr = malloc(trampo_text.len(), 4);
+    let allocated_text =
+        unsafe { slice::from_raw_parts_mut(allocated_text_ptr, trampo_text.len()) };
+    allocated_text.copy_from_slice(&trampo_text);
 
     let allocated_got_ptr = malloc(header.n_reloc * 4, 4);
     let allocated_got = unsafe { slice::from_raw_parts_mut(allocated_got_ptr, header.n_reloc * 4) };
@@ -143,9 +153,9 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     let allocated_data = unsafe { slice::from_raw_parts_mut(allocated_data_ptr, header.l_data) };
     allocated_data.copy_from_slice(&data);
 
-    let text_begin = allocated_text_ptr as usize;
+    let trampo_text_begin = allocated_text_ptr as usize;
+    let text_begin = flash_text_ptr as usize;
     let data_begin = allocated_data_ptr as usize;
-    let got_begin = allocated_got_ptr as usize;
 
     let trampo_entries: Vec<_> = (0..header.n_funcs).map(|i| 16 * i).collect();
 
@@ -160,7 +170,7 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
     let common_trampo_entry = 16 * header.n_funcs;
     modify_pair(
         &mut allocated_text[common_trampo_entry..common_trampo_entry + 8],
-        got_begin,
+        allocated_got_ptr as usize,
     );
 
     for (offset, symt_idx) in relocs {
@@ -168,11 +178,10 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
         match sym.s_type & 3 {
             0 | 1 => {
                 // Exported / Local
-                let got_index =
-                    usize::from_le_bytes(allocated_text[offset..offset + 4].try_into().unwrap());
+                let got_index = usize::from_le_bytes(text[offset..offset + 4].try_into().unwrap());
                 let entry = sym.index
                     + if sym.s_type > 4 {
-                        text_begin
+                        trampo_text_begin
                     } else {
                         data_begin
                     };
@@ -188,9 +197,8 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
                         let symbol = dependency.get_symbol(&sym.s_name);
                         if let Some(symbol) = symbol {
                             let entry = symbol.index.to_le_bytes();
-                            let got_index = usize::from_le_bytes(
-                                allocated_text[offset..offset + 4].try_into().unwrap(),
-                            );
+                            let got_index =
+                                usize::from_le_bytes(text[offset..offset + 4].try_into().unwrap());
                             for j in 0..4 {
                                 allocated_got[got_index + j] = entry[j];
                             }
@@ -202,7 +210,7 @@ pub fn dl_load(buf: Vec<u8>, dependencies: Option<Vec<Module>>) -> Module {
         }
     }
     for (idx, trampo_entry) in zip(glb_funcs, trampo_entries) {
-        sym_table[idx].index = text_begin + trampo_entry + 1;
+        sym_table[idx].index = trampo_text_begin + trampo_entry + 1;
     }
     Module {
         sym_table,

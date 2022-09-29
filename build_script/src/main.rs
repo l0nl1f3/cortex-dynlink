@@ -80,9 +80,8 @@ fn compile_trampoline(obj_path: &str, module_name: &str) {
 }
 
 // link given objects into out.elf
-fn link_objects(objs: &Vec<String>) {
+fn link_objects(objs: &Vec<String>, output: &str) {
     let input = objs.join(" ");
-    let output = "out.elf";
     let link_cmd = format!(crate::LINK_CMD!(), input = input, output = output);
 
     let output = Command::new("bash")
@@ -265,6 +264,9 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     );
 
     image.extend(flat_sym_names);
+    if (image.len() % 4) != 0 {
+        image.extend(vec![0; 4 - image.len() % 4]);
+    }
     image.extend(code_section);
     image.extend(data_section);
     image.extend(bss_section);
@@ -293,20 +295,13 @@ fn main() {
         .map(|path| path.replace(".o", "_pre.o"))
         .collect();
 
-    let mut linker_input_path = trampoline_paths;
-    linker_input_path.extend(input_obj_paths.into_iter());
+    let mut linker_input_paths = trampoline_paths;
+    linker_input_paths.extend(input_obj_paths);
+    link_objects(&linker_input_paths, "module.elf");
 
-    link_objects(&linker_input_path);
-
-    let image = make_image(&String::from("out.elf"), glb_funcs).unwrap();
+    let image = make_image(&String::from("module.elf"), glb_funcs).unwrap();
     // handling results
-    let mut file = fs::File::create("../dl-lib/src/lib/binary.rs").expect("Open binary.rs failed");
-
-    file.write_fmt(format_args!(
-        "pub static BUF: [u8; {}] = {:?};\n",
-        image.len(),
-        image
-    ))
-    .expect("Write binary.rs failed");
+    let mut file = fs::File::create("../dl-lib/module.bin").expect("Open binary.rs failed");
+    file.write_all(&image).expect("Write failed");
     println!("{:?}", image);
 }
