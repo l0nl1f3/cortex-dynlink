@@ -140,15 +140,18 @@ pub fn dl_load(p_start: *const u8, p_end: *const u8, dependencies: Option<Vec<Mo
     let text = acquire_vec(&buf, &mut begin, header.l_text);
     let data = acquire_vec(&buf, &mut begin, header.l_data);
 
+    // extract trampoline code and copy to RAM
     let trampo_text = text[0..16 * (header.n_funcs + 1)].to_vec();
     let allocated_text_ptr = malloc(trampo_text.len(), 4);
     let allocated_text =
         unsafe { slice::from_raw_parts_mut(allocated_text_ptr, trampo_text.len()) };
     allocated_text.copy_from_slice(&trampo_text);
 
+    // create GOT on RAM
     let allocated_got_ptr = malloc(header.n_reloc * 4, 4);
     let allocated_got = unsafe { slice::from_raw_parts_mut(allocated_got_ptr, header.n_reloc * 4) };
 
+    // copy data section to RAM
     let allocated_data_ptr = malloc(header.l_data, 4);
     let allocated_data = unsafe { slice::from_raw_parts_mut(allocated_data_ptr, header.l_data) };
     allocated_data.copy_from_slice(&data);
