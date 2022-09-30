@@ -2,7 +2,6 @@ extern crate alloc;
 use alloc::{string::String, vec::Vec};
 use core::alloc::{GlobalAlloc, Layout};
 use core::{iter::zip, mem, slice};
-use cortex_m_semihosting::dbg;
 
 use crate::ALLOCATOR;
 
@@ -69,12 +68,8 @@ impl Module {
     }
 }
 
-// fn acquire_vec(buf: &[u8], begin: &mut usize, length: usize) -> Vec<u8> {
-//     let slice = buf[*begin..*begin + length].to_vec();
-//     *begin += length;
-//     slice
-// }
-
+/// given start address and length, extract the region [start, start + length) to a vector
+/// the assign start + length to start
 fn acquire_vec(start: &mut usize, length: usize) -> Vec<u8> {
     let p_start = *start as *const u8;
     let slice = unsafe { slice::from_raw_parts(p_start, length) };
@@ -121,6 +116,7 @@ fn modify_pair(slice: &mut [u8], v: usize) {
 pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module {
     let header: ModuleHeader = unsafe { mem::transmute(*p_start.cast::<[u8; HEADER_LEN]>()) };
     let mut start = HEADER_LEN + p_start as usize;
+
     let relocs: Vec<_> = acquire_vec(&mut start, header.n_reloc as usize * 8)
         .chunks(8)
         .map(|slice| {
@@ -140,13 +136,14 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
         start += 4 - start % 4;
     }
     let text_begin = start;
-    let text = acquire_vec(&mut start, header.l_text);
+    let text_begin_ptr = start as *const u8;
 
     // extract trampoline code and copy to RAM
-    let trampo = text[0..16 * (header.n_funcs + 1)].to_vec();
-    let allocated_trampo_ptr = malloc(trampo.len(), 4);
-    let allocated_trampo = unsafe { slice::from_raw_parts_mut(allocated_trampo_ptr, trampo.len()) };
-    allocated_trampo.copy_from_slice(&trampo);
+    // trampoline code is a prefix of the text section and is of length 16 * (n_funcs + 1)
+    let trampo_len = 16 * (header.n_funcs + 1);
+    let allocated_trampo_ptr = malloc(trampo_len, 4);
+    let allocated_trampo = unsafe { slice::from_raw_parts_mut(allocated_trampo_ptr, trampo_len) };
+    allocated_trampo.copy_from_slice(&acquire_vec(&mut start, header.l_text)[0..trampo_len]);
 
     // create GOT on RAM
     let allocated_got_ptr = malloc(header.n_reloc * 4, 4);
@@ -181,10 +178,12 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
         match sym.s_type & 3 {
             0 | 1 => {
                 // Exported / Local
-                let got_index = usize::from_le_bytes(text[offset..offset + 4].try_into().unwrap());
+                let got_index = usize::from_le_bytes(unsafe {
+                    *text_begin_ptr.offset(offset as isize).cast::<[u8; 4]>()
+                });
                 let entry = sym.index
                     + if sym.s_type > 4 {
-                        trampo_text_begin
+                        text_begin
                     } else {
                         data_begin
                     };
@@ -200,8 +199,9 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
                         let symbol = dependency.get_symbol(&sym.s_name);
                         if let Some(symbol) = symbol {
                             let entry = symbol.index.to_le_bytes();
-                            let got_index =
-                                usize::from_le_bytes(text[offset..offset + 4].try_into().unwrap());
+                            let got_index = usize::from_le_bytes(unsafe {
+                                *text_begin_ptr.offset(offset as isize).cast::<[u8; 4]>()
+                            });
                             for j in 0..4 {
                                 allocated_got[got_index + j] = entry[j];
                             }

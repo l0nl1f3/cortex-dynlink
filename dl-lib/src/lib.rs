@@ -9,7 +9,6 @@ use panic_halt as _;
 
 use crate::utils::module::{dl_entry_by_name, dl_val_by_name};
 
-use self::alloc::{vec, vec::Vec};
 use core::alloc::Layout;
 use core::mem;
 
