@@ -141,7 +141,6 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
     }
     let text_begin = start;
     let text = acquire_vec(&mut start, header.l_text);
-    let data = acquire_vec(&mut start, header.l_data);
 
     // extract trampoline code and copy to RAM
     let trampo = text[0..16 * (header.n_funcs + 1)].to_vec();
@@ -156,7 +155,7 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
     // copy data section to RAM
     let allocated_data_ptr = malloc(header.l_data, 4);
     let allocated_data = unsafe { slice::from_raw_parts_mut(allocated_data_ptr, header.l_data) };
-    allocated_data.copy_from_slice(&data);
+    allocated_data.copy_from_slice(&acquire_vec(&mut start, header.l_data));
 
     let trampo_text_begin = allocated_trampo_ptr as usize;
     let data_begin = allocated_data_ptr as usize;
