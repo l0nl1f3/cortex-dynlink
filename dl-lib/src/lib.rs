@@ -46,7 +46,7 @@ fn main() -> ! {
     init_heap();
     let p_start = unsafe { &_binary_module_bin_start as *const u8 };
     let p_end = unsafe { &_binary_module_bin_end as *const u8 };
-    let module = module::dl_load(p_start, p_end, None);
+    let module = module::dl_load(p_start, None);
     let entry = dl_entry_by_name(&module, "test");
     let f = unsafe { mem::transmute::<usize, fn(u32) -> u32>(entry) };
     dbg!(call_func_arg(f, 1));

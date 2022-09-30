@@ -69,12 +69,18 @@ impl Module {
     }
 }
 
-fn acquire_vec(buf: &[u8], begin: &mut usize, length: usize) -> Vec<u8> {
-    let slice = buf[*begin..*begin + length].to_vec();
-    *begin += length;
-    slice
-}
+// fn acquire_vec(buf: &[u8], begin: &mut usize, length: usize) -> Vec<u8> {
+//     let slice = buf[*begin..*begin + length].to_vec();
+//     *begin += length;
+//     slice
+// }
 
+fn acquire_vec(start: &mut usize, length: usize) -> Vec<u8> {
+    let p_start = *start as *const u8;
+    let slice = unsafe { slice::from_raw_parts(p_start, length) };
+    *start += length;
+    slice.to_vec()
+}
 /// allocate n bytes from the heap and return a pointer to the beginning of the allocated memory
 fn malloc(n: usize, align: usize) -> *mut u8 {
     unsafe { ALLOCATOR.alloc(Layout::from_size_align(n, align).unwrap()) }
@@ -112,12 +118,10 @@ fn modify_pair(slice: &mut [u8], v: usize) {
 ///
 ///  The procedure will place GOT, data section and trampoline codes (function indirections) in the RAM
 ///  Other codes won't be copied to the RAM
-pub fn dl_load(p_start: *const u8, p_end: *const u8, dependencies: Option<Vec<Module>>) -> Module {
-    let buf = unsafe { slice::from_raw_parts(p_start, p_end as usize - p_start as usize) };
-    let header_ptr = (&buf[..HEADER_LEN]).as_ptr() as *const [u8; HEADER_LEN];
-    let header: ModuleHeader = unsafe { mem::transmute(*header_ptr) };
-    let mut begin = HEADER_LEN;
-    let relocs: Vec<_> = acquire_vec(&buf, &mut begin, header.n_reloc as usize * 8)
+pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module {
+    let header: ModuleHeader = unsafe { mem::transmute(*p_start.cast::<[u8; HEADER_LEN]>()) };
+    let mut start = HEADER_LEN + p_start as usize;
+    let relocs: Vec<_> = acquire_vec(&mut start, header.n_reloc as usize * 8)
         .chunks(8)
         .map(|slice| {
             let offset = usize::from_le_bytes(slice[0..4].try_into().unwrap());
@@ -125,27 +129,25 @@ pub fn dl_load(p_start: *const u8, p_end: *const u8, dependencies: Option<Vec<Mo
             (offset, idx)
         })
         .collect();
-
-    let glb_funcs: Vec<_> = acquire_vec(&buf, &mut begin, header.n_funcs * 4)
+    let glb_funcs: Vec<_> = acquire_vec(&mut start, header.n_funcs * 4)
         .chunks(4)
         .map(|idx_slice| usize::from_le_bytes(idx_slice.try_into().unwrap()))
         .collect();
 
-    let raw_sym_table = acquire_vec(&buf, &mut begin, header.l_symt);
+    let raw_sym_table = acquire_vec(&mut start, header.l_symt);
     let mut sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);
-    if begin % 4 != 0 {
-        begin += 4 - begin % 4;
+    if start % 4 != 0 {
+        start += 4 - start % 4;
     }
-    let flash_text_ptr = unsafe { p_start.offset(begin.try_into().unwrap()) };
-    let text = acquire_vec(&buf, &mut begin, header.l_text);
-    let data = acquire_vec(&buf, &mut begin, header.l_data);
+    let text_begin = start;
+    let text = acquire_vec(&mut start, header.l_text);
+    let data = acquire_vec(&mut start, header.l_data);
 
     // extract trampoline code and copy to RAM
-    let trampo_text = text[0..16 * (header.n_funcs + 1)].to_vec();
-    let allocated_text_ptr = malloc(trampo_text.len(), 4);
-    let allocated_text =
-        unsafe { slice::from_raw_parts_mut(allocated_text_ptr, trampo_text.len()) };
-    allocated_text.copy_from_slice(&trampo_text);
+    let trampo = text[0..16 * (header.n_funcs + 1)].to_vec();
+    let allocated_trampo_ptr = malloc(trampo.len(), 4);
+    let allocated_trampo = unsafe { slice::from_raw_parts_mut(allocated_trampo_ptr, trampo.len()) };
+    allocated_trampo.copy_from_slice(&trampo);
 
     // create GOT on RAM
     let allocated_got_ptr = malloc(header.n_reloc * 4, 4);
@@ -156,8 +158,7 @@ pub fn dl_load(p_start: *const u8, p_end: *const u8, dependencies: Option<Vec<Mo
     let allocated_data = unsafe { slice::from_raw_parts_mut(allocated_data_ptr, header.l_data) };
     allocated_data.copy_from_slice(&data);
 
-    let trampo_text_begin = allocated_text_ptr as usize;
-    let text_begin = flash_text_ptr as usize;
+    let trampo_text_begin = allocated_trampo_ptr as usize;
     let data_begin = allocated_data_ptr as usize;
 
     let trampo_entries: Vec<_> = (0..header.n_funcs).map(|i| 16 * i).collect();
@@ -165,14 +166,14 @@ pub fn dl_load(p_start: *const u8, p_end: *const u8, dependencies: Option<Vec<Mo
     for (idx, trampo_entry) in zip(&glb_funcs, &trampo_entries) {
         let entry = text_begin + sym_table[*idx].index;
         modify_pair(
-            &mut allocated_text[trampo_entry + 4..trampo_entry + 12],
+            &mut allocated_trampo[trampo_entry + 4..trampo_entry + 12],
             entry,
         );
     }
 
     let common_trampo_entry = 16 * header.n_funcs;
     modify_pair(
-        &mut allocated_text[common_trampo_entry..common_trampo_entry + 8],
+        &mut allocated_trampo[common_trampo_entry..common_trampo_entry + 8],
         allocated_got_ptr as usize,
     );
 
