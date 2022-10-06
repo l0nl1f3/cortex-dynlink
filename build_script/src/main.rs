@@ -290,13 +290,13 @@ fn main() {
         .flat_map(|path| readelf::get_pub_funcs(path).unwrap())
         .collect();
 
-    let trampoline_paths: Vec<_> = input_obj_paths
-        .iter()
-        .map(|path| path.replace(".o", "_pre.o"))
-        .collect();
+    // let trampoline_paths: Vec<_> = input_obj_paths
+    //     .iter()
+    //     .map(|path| path.replace(".o", "_pre.o"))
+    //     .collect();
 
-    let mut linker_input_paths = trampoline_paths;
-    linker_input_paths.extend(input_obj_paths);
+    let linker_input_paths = input_obj_paths;
+    // linker_input_paths.extend(input_obj_paths);
     link_objects(&linker_input_paths, "module.elf");
 
     let image = make_image(&String::from("module.elf"), glb_funcs).unwrap();

@@ -3,7 +3,9 @@ use alloc::{string::String, vec::Vec};
 use core::alloc::{GlobalAlloc, Layout};
 use core::{iter::zip, mem, slice};
 
+use super::template;
 use crate::ALLOCATOR;
+use cortex_m_semihosting::dbg;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -59,6 +61,7 @@ pub struct Module {
     pub sym_table: Vec<Symbol>,
     pub text_begin: usize,
     pub data_begin: usize,
+    pub got_begin: usize,
 }
 
 impl Module {
@@ -137,13 +140,9 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
     }
     let text_begin = start;
     let text_begin_ptr = start as *const u8;
-
+    start += header.l_text;
     // extract trampoline code and copy to RAM
     // trampoline code is a prefix of the text section and is of length 16 * (n_funcs + 1)
-    let trampo_len = 16 * (header.n_funcs + 1);
-    let allocated_trampo_ptr = malloc(trampo_len, 4);
-    let allocated_trampo = unsafe { slice::from_raw_parts_mut(allocated_trampo_ptr, trampo_len) };
-    allocated_trampo.copy_from_slice(&acquire_vec(&mut start, header.l_text)[0..trampo_len]);
 
     // create GOT on RAM
     let allocated_got_ptr = malloc(header.n_reloc * 4, 4);
@@ -152,26 +151,57 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
     // copy data section to RAM
     let allocated_data_ptr = malloc(header.l_data, 4);
     let allocated_data = unsafe { slice::from_raw_parts_mut(allocated_data_ptr, header.l_data) };
-    allocated_data.copy_from_slice(&acquire_vec(&mut start, header.l_data));
-
-    let trampo_text_begin = allocated_trampo_ptr as usize;
-    let data_begin = allocated_data_ptr as usize;
-
-    let trampo_entries: Vec<_> = (0..header.n_funcs).map(|i| 16 * i).collect();
-
-    for (idx, trampo_entry) in zip(&glb_funcs, &trampo_entries) {
-        let entry = text_begin + sym_table[*idx].index;
-        modify_pair(
-            &mut allocated_trampo[trampo_entry + 4..trampo_entry + 12],
-            entry,
-        );
+    let data = acquire_vec(&mut start, header.l_data);
+    allocated_data.copy_from_slice(&data);
+    // Generate plt
+    // The plt consist of two parts, manual calls and cross boundary calls
+    // The difference between them is that the former doesn't requires the recovery of R9 after the execution of function
+    // The plt contains (number of funtions+number of function calls) entries
+    let mut plt_1: Vec<u8> = Vec::new();
+    let got_begin = allocated_got_ptr as usize;
+    let cur_obj_base = got_begin.to_le_bytes();
+    for g in &glb_funcs {
+        let f = &sym_table[*g];
+        let mut plt_1_call = template::NO_RECOV_FUNC_CALL.to_vec();
+        let function_entry = (text_begin + f.index).to_le_bytes();
+        for i in 0..4 {
+            plt_1_call[12 + i] = function_entry[i];
+            plt_1_call[16 + i] = cur_obj_base[i];
+        }
+        plt_1.extend(plt_1_call);
+    }
+    let mut plt_2: Vec<u8> = Vec::new();
+    for (offset, symt_idx) in &relocs {
+        let sym = &sym_table[*symt_idx];
+        if let 2 = sym.s_type & 3 {
+            if let Some(ref dependencies) = dependencies {
+                for dependency in dependencies {
+                    let symbol = dependency.get_symbol(&sym.s_name);
+                    if let Some(symbol) = symbol {
+                        let mut plt_2_call = template::RECOV_FUNC_CALL.to_vec();
+                        let function_entry = (text_begin + symbol.index).to_le_bytes();
+                        let foreign_obj_static_base = dependency.got_begin.to_le_bytes();
+                        let return_address = (text_begin + offset + 4).to_le_bytes();
+                        for i in 0..4 {
+                            plt_2_call[20 + i] = function_entry[i];
+                            plt_2_call[24 + i] = foreign_obj_static_base[i];
+                            plt_2_call[28 + i] = return_address[i];
+                        }
+                        plt_2.extend(plt_2_call);
+                    }
+                }
+            }
+        }
+    }
+    plt_1.extend(plt_2);
+    let allocated_plt = malloc(plt_1.len(), 4);
+    unsafe {
+        slice::from_raw_parts_mut(allocated_plt, plt_1.len()).copy_from_slice(&plt_1);
     }
 
-    let common_trampo_entry = 16 * header.n_funcs;
-    modify_pair(
-        &mut allocated_trampo[common_trampo_entry..common_trampo_entry + 8],
-        allocated_got_ptr as usize,
-    );
+    let data_begin = allocated_data_ptr as usize;
+
+    let trampo_entries: Vec<_> = (0..header.n_funcs).map(|i| 20 * i).collect();
 
     for (offset, symt_idx) in relocs {
         let sym = &sym_table[symt_idx];
@@ -213,12 +243,14 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
         }
     }
     for (idx, trampo_entry) in zip(glb_funcs, trampo_entries) {
-        sym_table[idx].index = trampo_text_begin + trampo_entry + 1;
+        // TODO
+        sym_table[idx].index = allocated_plt as usize + trampo_entry + 1;
     }
     Module {
         sym_table,
         text_begin,
         data_begin,
+        got_begin,
     }
 }
 

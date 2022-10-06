@@ -18,7 +18,7 @@ use cortex_m_rt::entry;
 use cortex_m_semihosting::dbg;
 
 mod utils;
-use utils::module;
+use utils::{module, template};
 // this is the allocator the application will use
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
@@ -47,6 +47,7 @@ fn main() -> ! {
     let module = module::dl_load(p_start, None);
     let entry = dl_entry_by_name(&module, "test");
     let f = unsafe { mem::transmute::<usize, fn(u32) -> u32>(entry) };
+    dbg!(&module);
     dbg!(call_func_arg(f, 1));
     let x = dl_val_by_name(&module, "GLOBAL_X", |x| {
         u8::from_le_bytes(x.try_into().unwrap())
