@@ -277,12 +277,13 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
 
 // Statically link the raw_objects[] into single dynamic library.
 fn main() {
-    let input_obj_paths: Vec<String> = vec![String::from("module.o")];
+    let module_name = "module_def";
+    let input_obj_paths: Vec<String> = vec![String::from(format!("{}.o", module_name))];
 
     // Compile trampoline for each input object file.
     for path in &input_obj_paths {
         // TODO: change fixed "module"
-        compile_trampoline(path, "module");
+        compile_trampoline(path, module_name);
     }
 
     let glb_funcs: Vec<_> = input_obj_paths
@@ -297,11 +298,12 @@ fn main() {
 
     let linker_input_paths = input_obj_paths;
     // linker_input_paths.extend(input_obj_paths);
-    link_objects(&linker_input_paths, "module.elf");
+    link_objects(&linker_input_paths, &format!("{}.elf", module_name));
 
-    let image = make_image(&String::from("module.elf"), glb_funcs).unwrap();
+    let image = make_image(&format!("{}.elf", module_name), glb_funcs).unwrap();
     // handling results
-    let mut file = fs::File::create("../dl-lib/module.bin").expect("Open binary.rs failed");
+    let mut file =
+        fs::File::create(format!("../dl-lib/{}.bin", module_name)).expect("Open binary.rs failed");
     file.write_all(&image).expect("Write failed");
     println!("{:?}", image);
 }
