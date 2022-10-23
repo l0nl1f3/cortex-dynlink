@@ -1,22 +1,3 @@
-pub static RECOV_FUNC_CALL: [u8; 32] = [
-    0xdf, 0xf8, 0x10, 0xc0, // ldr.w r12, [pc, #16]
-    0xdf, 0xf8, 0x10, 0x90, // ldr.w r9, [pc, #16]
-    0x60, 0x47, // bx r12
-    0xdf, 0xf8, 0x10, 0xe0, // ldr.w lr, [pc, #16]
-    0x00, 0xf0, 0x00, 0xb8, // b 0
-    0x00, 0x00, // nop
-    0x00, 0x00, 0x00, 0x00, // function entry
-    0x00, 0x00, 0x00, 0x00, // object2 static base
-    0x00, 0x00, 0x00, 0x00, // ret
-];
-
-pub static OBJ_COMMON: [u8; 12] = [
-    0xdf, 0xf8, 0x04, 0x90, // ldr.w r9, [pc, #4]
-    0x70, 0x47, // bx lr
-    0x00, 0x00, // nop
-    0x00, 0x00, 0x00, 0x00, // object1 static base
-];
-
 pub static NO_RECOV_FUNC_CALL: [u8; 20] = [
     0xdf, 0xf8, 0x08, 0xc0, // ldr.w r12, [pc, #8]
     0xdf, 0xf8, 0x08, 0x90, // ldr.w r9, [pc, #8]
@@ -25,3 +6,17 @@ pub static NO_RECOV_FUNC_CALL: [u8; 20] = [
     0x00, 0x00, 0x00, 0x00, // function entry
     0x00, 0x00, 0x00, 0x00, // object2 static base
 ];
+
+// a. blx .plt.test // lr=a
+// b. ....
+// c. blx test // lr=c
+// d. ....
+// e. bx lr ?  // -> c
+
+// a. blx .plt.test // lr=a
+// b. ....
+// c. bx test // lr=a -> unexpectedly leaves plt
+// d. ....    // skipped
+// e. bx lr ?
+
+// d. recover r9

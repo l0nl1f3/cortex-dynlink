@@ -1,10 +1,10 @@
 extern crate alloc;
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, vec, vec::Vec};
 use core::alloc::{GlobalAlloc, Layout};
 use core::{iter::zip, mem, slice};
 
-use super::template;
-use crate::ALLOCATOR;
+use super::{instr, template};
+use crate::{lr_range_to_base, ALLOCATOR};
 use cortex_m_semihosting::dbg;
 
 #[repr(C)]
@@ -22,7 +22,8 @@ pub struct ModuleHeader {
 #[derive(Debug, Clone)]
 pub struct Symbol {
     pub s_type: u8,
-    pub index: usize,
+    pub index1: usize,
+    pub index2: usize,
     pub s_name: String,
 }
 
@@ -46,7 +47,8 @@ fn parse_symtable(n_symbol: &usize, data: &Vec<u8>) -> Vec<Symbol> {
         }
         symbols.push(Symbol {
             s_type,
-            index,
+            index1: index,
+            index2: 0,
             s_name,
         });
     }
@@ -60,6 +62,7 @@ const HEADER_LEN: usize = mem::size_of::<ModuleHeader>();
 pub struct Module {
     pub sym_table: Vec<Symbol>,
     pub text_begin: usize,
+    pub text_end: usize,
     pub data_begin: usize,
     pub got_begin: usize,
 }
@@ -119,7 +122,6 @@ fn modify_pair(slice: &mut [u8], v: usize) {
 pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module {
     let header: ModuleHeader = unsafe { mem::transmute(*p_start.cast::<[u8; HEADER_LEN]>()) };
     let mut start = HEADER_LEN + p_start as usize;
-
     let relocs: Vec<_> = acquire_vec(&mut start, header.n_reloc as usize * 8)
         .chunks(8)
         .map(|slice| {
@@ -132,7 +134,6 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
         .chunks(4)
         .map(|idx_slice| usize::from_le_bytes(idx_slice.try_into().unwrap()))
         .collect();
-
     let raw_sym_table = acquire_vec(&mut start, header.l_symt);
     let mut sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);
     if start % 4 != 0 {
@@ -163,36 +164,35 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
     for g in &glb_funcs {
         let f = &sym_table[*g];
         let mut plt_1_call = template::NO_RECOV_FUNC_CALL.to_vec();
-        let function_entry = (text_begin + f.index).to_le_bytes();
+        let function_entry = (text_begin + f.index1).to_le_bytes();
         for i in 0..4 {
             plt_1_call[12 + i] = function_entry[i];
             plt_1_call[16 + i] = cur_obj_base[i];
         }
+        // if f.s_name == "test" {
+        //     dbg!(&plt_1_call);
+        // }
         plt_1.extend(plt_1_call);
     }
     let mut plt_2: Vec<u8> = Vec::new();
-    for (offset, symt_idx) in &relocs {
-        let sym = &sym_table[*symt_idx];
-        if let 2 = sym.s_type & 3 {
-            if let Some(ref dependencies) = dependencies {
-                for dependency in dependencies {
-                    let symbol = dependency.get_symbol(&sym.s_name);
-                    if let Some(symbol) = symbol {
-                        let mut plt_2_call = template::RECOV_FUNC_CALL.to_vec();
-                        let function_entry = (text_begin + symbol.index).to_le_bytes();
-                        let foreign_obj_static_base = dependency.got_begin.to_le_bytes();
-                        let return_address = (text_begin + offset + 4).to_le_bytes();
-                        for i in 0..4 {
-                            plt_2_call[20 + i] = function_entry[i];
-                            plt_2_call[24 + i] = foreign_obj_static_base[i];
-                            plt_2_call[28 + i] = return_address[i];
-                        }
-                        plt_2.extend(plt_2_call);
-                    }
-                }
-            }
+    let block_size = 52;
+    for g in &glb_funcs {
+        let f = &sym_table[*g];
+        let function_entry = (text_begin + f.index1).to_le_bytes();
+        let mut plt_2_call = Vec::new();
+        plt_2_call.extend(instr::nop());
+        plt_2_call.extend(instr::svc());
+        plt_2_call.extend(cur_obj_base);
+        plt_2_call.extend(function_entry);
+        for _ in 0..block_size - plt_2_call.len() {
+            plt_2_call.push(0);
         }
+        plt_2.extend(plt_2_call);
     }
+    let trampo_entries_2 = (0..header.n_funcs)
+        .map(|i| 12 * i + plt_1.len())
+        .collect::<Vec<_>>();
+    dbg!(plt_1.len());
     plt_1.extend(plt_2);
     let allocated_plt = malloc(plt_1.len(), 4);
     unsafe {
@@ -211,7 +211,7 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
                 let got_index = usize::from_le_bytes(unsafe {
                     *text_begin_ptr.offset(offset as isize).cast::<[u8; 4]>()
                 });
-                let entry = sym.index
+                let entry = sym.index1
                     + if sym.s_type > 4 {
                         text_begin
                     } else {
@@ -228,7 +228,8 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
                     for dependency in dependencies {
                         let symbol = dependency.get_symbol(&sym.s_name);
                         if let Some(symbol) = symbol {
-                            let entry = symbol.index.to_le_bytes();
+                            let entry = symbol.index2.to_le_bytes();
+                            dbg!(entry);
                             let got_index = usize::from_le_bytes(unsafe {
                                 *text_begin_ptr.offset(offset as isize).cast::<[u8; 4]>()
                             });
@@ -242,13 +243,16 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
             _ => {}
         }
     }
-    for (idx, trampo_entry) in zip(glb_funcs, trampo_entries) {
+    for (idx, trampo_entry) in zip(glb_funcs, zip(trampo_entries, trampo_entries_2)) {
         // TODO
-        sym_table[idx].index = allocated_plt as usize + trampo_entry + 1;
+        dbg!(trampo_entry);
+        sym_table[idx].index1 = allocated_plt as usize + trampo_entry.0 + 1;
+        sym_table[idx].index2 = allocated_plt as usize + trampo_entry.1 + 1;
     }
     Module {
         sym_table,
         text_begin,
+        text_end: text_begin + header.l_text,
         data_begin,
         got_begin,
     }
@@ -256,7 +260,7 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
 
 /// Given symbol name and the module it belongs to, returns the entry address of function
 pub fn dl_entry_by_name(module: &Module, name: &str) -> usize {
-    module.get_symbol(name).expect("Symbol not found").index
+    module.get_symbol(name).expect("Symbol not found").index1
 }
 
 /// Given symbol name (whose type is T) and the module it belongs to
@@ -266,7 +270,7 @@ pub fn dl_val_by_name<T, F>(module: &Module, name: &str, bytes_to_t: F) -> T
 where
     F: Fn(&[u8]) -> T,
 {
-    let offset = module.get_symbol(name).expect("Symbol not found").index;
+    let offset = module.get_symbol(name).expect("Symbol not found").index1;
     let size_of = mem::size_of::<T>();
     unsafe {
         let data_begin = module.data_begin as *const u8;
@@ -276,4 +280,114 @@ where
         }
         bytes_to_t(&v)
     }
+}
+
+/// Given sp of exception stack frame, extend the plt according to lr
+/// and return to lr
+/// Pseudocode of dynamic PLT:
+/// foo belongs to obj2
+/// .plt.foo
+///     switch lr
+///         case lr_1
+///             ldr r9, =obj2.static_base
+///             ldr r12, =foo.entry
+///             blx r12
+///             ldr r9, =obj?.static_base (call site)
+///             bx lr_1
+///     ...
+///         case lr_n
+///             ldr r9, =obj2.static_base
+///             ldr r12, =foo.entry
+///             blx r12
+///             ldr r9, =obj?.static_base (call site)
+///             bx lr_n
+///     ...
+///         default
+///             svc #0
+///  .plt.foo (compile time)
+///     switch lr
+///         default
+///             svc #0
+///
+/// switch case assembly level
+/// case1:    
+///     ldr r12, =lr_1
+///     cmp lr, r12
+///     beq +4
+///     b case2
+/// case1_body:
+///     ldr r9, =obj2.static_base(const)
+///     ldr r12, =foo.entry(const)
+///     blx r12
+///     ldr r9, =obj?.static_base (call site)
+///     bx lr_1
+/// case2:
+///     ldr r12, =lr_2
+///     cmp lr, r12
+///     beq +4
+///     b case2   
+///     ...
+/// case2_body:
+///     ...
+/// casen:
+///     ldr r12, =lr_n
+///     cmp lr r12
+///     beq +4
+///     b case2
+/// casen_body:
+///    ...
+/// default:
+///     svc #0     
+///
+/// svc handler includes:
+///     1. extend plt
+///         move default to new place
+///         place new case in default's old place
+///     2. execute new case, return to lr (only lr is required)
+/// svc guarantees that stack and caller-saved register will remain intact
+///
+/// the requires argument:
+///     planA. s
+pub unsafe extern "C" fn svcall_handler(sp: *mut u32) {
+    let lr = *sp.offset(5);
+    let pc = *sp.offset(6);
+    let pc_ptr = pc as *const u8;
+    dbg!(lr);
+    dbg!(pc);
+    let mut case = vec![];
+    case.extend(instr::ldr(12, lr));
+    case.extend(instr::cmp_lr_r12());
+    case.extend(instr::beq(4));
+    let def_static_base = u32::from_le_bytes(*pc_ptr.offset(0).cast::<[u8; 4]>());
+    let func_entry = u32::from_le_bytes(*pc_ptr.offset(4).cast::<[u8; 4]>());
+    let mut call_static_base = 0;
+    for m in lr_range_to_base.iter() {
+        let lr_u = lr as usize;
+        if m.start <= lr_u && lr_u < m.end {
+            call_static_base = m.base as u32;
+            break;
+        }
+    }
+    dbg!(def_static_base);
+    dbg!(func_entry);
+    dbg!(call_static_base);
+    let mut case_body = vec![];
+    case_body.extend(instr::ldr(9, def_static_base));
+    case_body.extend(instr::ldr(12, func_entry));
+    case_body.extend(instr::blx(12));
+    case_body.extend(instr::ldr(9, call_static_base));
+    case_body.extend(instr::ldr(12, lr + 4));
+    case_body.extend(instr::bx(12));
+    case_body.extend(instr::nop());
+    case.extend(instr::b(case_body.len() as u8));
+    case.extend(case_body);
+    let next_default = malloc(case.len(), 4);
+    let prev_default = (pc - 4) as *mut u8;
+    // copy default to new place
+    let mut block = vec![];
+    for i in 0..case.len() {
+        *next_default.offset(i as isize) = *prev_default.offset(i as isize);
+        block.push(*prev_default.offset(i as isize));
+    }
+    slice::from_raw_parts_mut(prev_default, case.len()).copy_from_slice(&case);
 }
