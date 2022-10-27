@@ -5,7 +5,7 @@ use core::{iter::zip, mem, slice};
 
 use super::{instr, template};
 use crate::{lr_range_to_base, ALLOCATOR};
-use cortex_m_semihosting::dbg;
+use cortex_m_semihosting::{dbg, hprintln};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -169,18 +169,14 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
             plt_1_call[12 + i] = function_entry[i];
             plt_1_call[16 + i] = cur_obj_base[i];
         }
-        // if f.s_name == "test" {
-        //     dbg!(&plt_1_call);
-        // }
         plt_1.extend(plt_1_call);
     }
     let mut plt_2: Vec<u8> = Vec::new();
-    let block_size = 52;
+    let block_size = 60;
     for g in &glb_funcs {
         let f = &sym_table[*g];
         let function_entry = (text_begin + f.index1).to_le_bytes();
         let mut plt_2_call = Vec::new();
-        plt_2_call.extend(instr::nop());
         plt_2_call.extend(instr::svc());
         plt_2_call.extend(cur_obj_base);
         plt_2_call.extend(function_entry);
@@ -190,9 +186,8 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
         plt_2.extend(plt_2_call);
     }
     let trampo_entries_2 = (0..header.n_funcs)
-        .map(|i| 12 * i + plt_1.len())
+        .map(|i| block_size * i + plt_1.len())
         .collect::<Vec<_>>();
-    dbg!(plt_1.len());
     plt_1.extend(plt_2);
     let allocated_plt = malloc(plt_1.len(), 4);
     unsafe {
@@ -201,7 +196,7 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
 
     let data_begin = allocated_data_ptr as usize;
 
-    let trampo_entries: Vec<_> = (0..header.n_funcs).map(|i| 20 * i).collect();
+    let trampo_entries: Vec<_> = (0..header.n_funcs).map(|i| block_size * i).collect();
 
     for (offset, symt_idx) in relocs {
         let sym = &sym_table[symt_idx];
@@ -229,7 +224,6 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
                         let symbol = dependency.get_symbol(&sym.s_name);
                         if let Some(symbol) = symbol {
                             let entry = symbol.index2.to_le_bytes();
-                            dbg!(entry);
                             let got_index = usize::from_le_bytes(unsafe {
                                 *text_begin_ptr.offset(offset as isize).cast::<[u8; 4]>()
                             });
@@ -245,7 +239,6 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
     }
     for (idx, trampo_entry) in zip(glb_funcs, zip(trampo_entries, trampo_entries_2)) {
         // TODO
-        dbg!(trampo_entry);
         sym_table[idx].index1 = allocated_plt as usize + trampo_entry.0 + 1;
         sym_table[idx].index2 = allocated_plt as usize + trampo_entry.1 + 1;
     }
@@ -325,7 +318,7 @@ where
 ///     ldr r12, =lr_2
 ///     cmp lr, r12
 ///     beq +4
-///     b case2   
+///     b case3   
 ///     ...
 /// case2_body:
 ///     ...
@@ -348,46 +341,43 @@ where
 ///
 /// the requires argument:
 ///     planA. s
-pub unsafe extern "C" fn svcall_handler(sp: *mut u32) {
+pub unsafe extern "C" fn svcall_handler(sp: *mut usize) {
     let lr = *sp.offset(5);
     let pc = *sp.offset(6);
     let pc_ptr = pc as *const u8;
-    dbg!(lr);
-    dbg!(pc);
     let mut case = vec![];
+    case.extend(instr::nop());
+    case.extend(instr::nop());
     case.extend(instr::ldr(12, lr));
     case.extend(instr::cmp_lr_r12());
-    case.extend(instr::beq(4));
-    let def_static_base = u32::from_le_bytes(*pc_ptr.offset(0).cast::<[u8; 4]>());
-    let func_entry = u32::from_le_bytes(*pc_ptr.offset(4).cast::<[u8; 4]>());
+    case.extend(instr::beq(2));
+    let def_static_base = usize::from_le_bytes(*pc_ptr.offset(0).cast::<[u8; 4]>());
+    let func_entry = usize::from_le_bytes(*pc_ptr.offset(4).cast::<[u8; 4]>());
     let mut call_static_base = 0;
     for m in lr_range_to_base.iter() {
-        let lr_u = lr as usize;
-        if m.start <= lr_u && lr_u < m.end {
-            call_static_base = m.base as u32;
+        if m.contains(lr) {
+            call_static_base = m.base();
             break;
         }
     }
-    dbg!(def_static_base);
-    dbg!(func_entry);
-    dbg!(call_static_base);
     let mut case_body = vec![];
     case_body.extend(instr::ldr(9, def_static_base));
     case_body.extend(instr::ldr(12, func_entry));
     case_body.extend(instr::blx(12));
     case_body.extend(instr::ldr(9, call_static_base));
-    case_body.extend(instr::ldr(12, lr + 4));
+    case_body.extend(instr::ldr(12, lr));
     case_body.extend(instr::bx(12));
     case_body.extend(instr::nop());
-    case.extend(instr::b(case_body.len() as u8));
-    case.extend(case_body);
-    let next_default = malloc(case.len(), 4);
+
+    let next_default = malloc(case.len() + 4 + case_body.len(), 4);
     let prev_default = (pc - 4) as *mut u8;
+    let dist = (next_default as i32) - (prev_default as i32) - (case.len() as i32) - 2;
+    case.extend(instr::b_w(dist));
+    case.extend(case_body);
     // copy default to new place
-    let mut block = vec![];
+
     for i in 0..case.len() {
         *next_default.offset(i as isize) = *prev_default.offset(i as isize);
-        block.push(*prev_default.offset(i as isize));
     }
     slice::from_raw_parts_mut(prev_default, case.len()).copy_from_slice(&case);
 }

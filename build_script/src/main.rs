@@ -277,7 +277,7 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
 
 // Statically link the raw_objects[] into single dynamic library.
 fn main() {
-    let module_name = "module_def";
+    let module_name = "module_call";
     let input_obj_paths: Vec<String> = vec![String::from(format!("{}.o", module_name))];
 
     // Compile trampoline for each input object file.

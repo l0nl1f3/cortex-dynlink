@@ -31,6 +31,14 @@ struct Range {
     end: usize,
     base: usize,
 }
+impl Range {
+    fn contains(&self, addr: usize) -> bool {
+        self.start <= addr && addr < self.end
+    }
+    fn base(&self) -> usize {
+        self.base
+    }
+}
 static mut lr_range_to_base: Vec<Range> = vec![];
 
 fn init_heap() {
@@ -56,10 +64,8 @@ fn call_func_arg(func: fn(u32) -> u32, arg: u32) -> u32 {
 #[entry]
 fn main() -> ! {
     init_heap();
-
     let p_start = unsafe { &_binary_module_def_bin_start as *const u8 };
     let module_def = module::dl_load(p_start, None);
-    dbg!(&module_def);
     unsafe {
         lr_range_to_base.push(Range {
             start: module_def.text_begin,
@@ -68,8 +74,7 @@ fn main() -> ! {
         });
     }
     let p_start = unsafe { &_binary_module_call_bin_start as *const u8 };
-    let module_call = module::dl_load(p_start, Some(vec![module_def]));
-    dbg!(&module_call);
+    let module_call = module::dl_load(p_start, Some(vec![module_def.clone()]));
     unsafe {
         lr_range_to_base.push(Range {
             start: module_call.text_begin,
@@ -80,11 +85,10 @@ fn main() -> ! {
     let entry = dl_entry_by_name(&module_call, "test");
     let f = unsafe { mem::transmute::<usize, fn(u32) -> u32>(entry) };
     dbg!(call_func_arg(f, 1));
-    let x = dl_val_by_name(&module_call, "GLOBAL_X", |x| {
+    let x = dl_val_by_name(&module_def, "GLOBAL_X", |x| {
         u8::from_le_bytes(x.try_into().unwrap())
     });
     dbg!(x);
-
     loop {}
 }
 

@@ -1,5 +1,6 @@
+use cortex_m_semihosting::dbg;
+
 pub fn b_w(imm24: i32) -> [u8; 4] {
-    let instr: [u8; 4] = [0xfe, 0xf7, 0x96, 0xbd];
     let imm11 = ((imm24 >> 1) & 0x7ff) as u16;
     let imm11_h = (imm11 >> 8) as u8;
     let imm11_l = (imm11 & 0xff) as u8;
@@ -30,11 +31,11 @@ pub fn mov_t_w(is_t: bool, reg: u8, v: u16) -> [u8; 4] {
     ]
 }
 
-pub fn ldr(reg: u8, imm32: u32) -> [u8; 8] {
-    let low = (imm32 & 0xfff) as u16;
-    let high = ((imm32 >> 16) & 0xfff) as u16;
-    let mut instr = mov_t_w(true, reg, high).to_vec();
-    instr.extend(mov_t_w(false, reg, low));
+pub fn ldr(reg: u8, imm32: usize) -> [u8; 8] {
+    let low = (imm32 & 0xffff) as u16;
+    let high = ((imm32 >> 16) & 0xffff) as u16;
+    let mut instr = mov_t_w(false, reg, low).to_vec();
+    instr.extend(mov_t_w(true, reg, high));
     instr.try_into().unwrap()
 }
 
