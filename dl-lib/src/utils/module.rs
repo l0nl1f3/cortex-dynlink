@@ -1,11 +1,10 @@
 extern crate alloc;
 use alloc::{string::String, vec, vec::Vec};
 use core::alloc::{GlobalAlloc, Layout};
-use core::{iter::zip, mem, slice};
+use core::{mem, slice};
 
 use super::{instr, template};
-use crate::{lr_range_to_base, ALLOCATOR};
-use cortex_m_semihosting::{dbg, hprintln};
+use crate::{ALLOCATOR, LR_RANGE_TO_BASE};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -87,28 +86,36 @@ fn malloc(n: usize, align: usize) -> *mut u8 {
     unsafe { ALLOCATOR.alloc(Layout::from_size_align(n, align).unwrap()) }
 }
 
-fn modify(slice: &mut [u8], v: u16) {
-    let imm4 = (v >> 12) as u8;
-    let i = (v >> 11 & 1) as u8;
-    let imm3 = (v >> 8 & 7) as u8;
-    let imm8 = (v & 255) as u8;
-    slice[0] = slice[0] | imm4;
-    slice[1] = slice[1] | i << 2;
-    slice[2] = imm8;
-    slice[3] = slice[3] | imm3 << 4;
+/// Generate plt
+/// The plt consist of two parts, manual calls and cross boundary calls
+/// The first part is for calls from the core, which doesn't require the recovery of r9 after function
+/// The second part is the dynamic plt (switch case), which starts from only one svc instruction as default
+fn generate_plt(func_entries: Vec<[u8; 4]>, block_size: usize, got_begin: usize) -> Vec<u8> {
+    let cur_obj_base = got_begin.to_le_bytes();
+    let mut plt = func_entries
+        .iter()
+        .flat_map(|entry| {
+            let mut non_case_body = template::NO_RECOV_FUNC_CALL.to_vec();
+            for i in 0..4 {
+                non_case_body[12 + i] = entry[i];
+                non_case_body[16 + i] = cur_obj_base[i];
+            }
+            non_case_body
+        })
+        .collect::<Vec<_>>();
+    for entry in &func_entries {
+        let function_entry = entry;
+        let mut default = Vec::new();
+        default.extend(instr::svc());
+        default.extend(cur_obj_base);
+        default.extend(function_entry);
+        for _ in 0..block_size - default.len() {
+            default.push(0);
+        }
+        plt.extend(default);
+    }
+    plt
 }
-
-/// Given opcode of the following
-///     movw #0
-///     movt #0
-/// modify it to
-///     movw v % 2^16
-///     movt v / 2^16
-fn modify_pair(slice: &mut [u8], v: usize) {
-    modify(&mut slice[0..4], (v & 0xffff) as u16); // movw
-    modify(&mut slice[4..8], (v >> 16) as u16); // movt
-}
-
 /// Given binary image and dependencies of loaded modules, load module from address p_start to p_end
 /// for external symbols, dependencies are assume to have their definition
 /// This function consist of the following steps
@@ -148,55 +155,32 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
     // create GOT on RAM
     let allocated_got_ptr = malloc(header.n_reloc * 4, 4);
     let allocated_got = unsafe { slice::from_raw_parts_mut(allocated_got_ptr, header.n_reloc * 4) };
-
+    let got_begin = allocated_got_ptr as usize;
     // copy data section to RAM
     let allocated_data_ptr = malloc(header.l_data, 4);
     let allocated_data = unsafe { slice::from_raw_parts_mut(allocated_data_ptr, header.l_data) };
     let data = acquire_vec(&mut start, header.l_data);
     allocated_data.copy_from_slice(&data);
-    // Generate plt
-    // The plt consist of two parts, manual calls and cross boundary calls
-    // The difference between them is that the former doesn't requires the recovery of R9 after the execution of function
-    // The plt contains (number of funtions+number of function calls) entries
-    let mut plt_1: Vec<u8> = Vec::new();
-    let got_begin = allocated_got_ptr as usize;
-    let cur_obj_base = got_begin.to_le_bytes();
-    for g in &glb_funcs {
-        let f = &sym_table[*g];
-        let mut plt_1_call = template::NO_RECOV_FUNC_CALL.to_vec();
-        let function_entry = (text_begin + f.index1).to_le_bytes();
-        for i in 0..4 {
-            plt_1_call[12 + i] = function_entry[i];
-            plt_1_call[16 + i] = cur_obj_base[i];
-        }
-        plt_1.extend(plt_1_call);
-    }
-    let mut plt_2: Vec<u8> = Vec::new();
-    let block_size = 60;
-    for g in &glb_funcs {
-        let f = &sym_table[*g];
-        let function_entry = (text_begin + f.index1).to_le_bytes();
-        let mut plt_2_call = Vec::new();
-        plt_2_call.extend(instr::svc());
-        plt_2_call.extend(cur_obj_base);
-        plt_2_call.extend(function_entry);
-        for _ in 0..block_size - plt_2_call.len() {
-            plt_2_call.push(0);
-        }
-        plt_2.extend(plt_2_call);
-    }
-    let trampo_entries_2 = (0..header.n_funcs)
-        .map(|i| block_size * i + plt_1.len())
-        .collect::<Vec<_>>();
-    plt_1.extend(plt_2);
-    let allocated_plt = malloc(plt_1.len(), 4);
+
+    // generate plt and copy to RAM
+    let case_block_size = 60;
+    let non_case_block_size = 20;
+    let plt = generate_plt(
+        {
+            glb_funcs
+                .iter()
+                .map(|idx| (sym_table[*idx].index1 + text_begin).to_le_bytes())
+                .collect::<Vec<_>>()
+        },
+        case_block_size,
+        got_begin,
+    );
+    let allocated_plt = malloc(plt.len(), 4);
     unsafe {
-        slice::from_raw_parts_mut(allocated_plt, plt_1.len()).copy_from_slice(&plt_1);
+        slice::from_raw_parts_mut(allocated_plt, plt.len()).copy_from_slice(&plt);
     }
 
     let data_begin = allocated_data_ptr as usize;
-
-    let trampo_entries: Vec<_> = (0..header.n_funcs).map(|i| block_size * i).collect();
 
     for (offset, symt_idx) in relocs {
         let sym = &sym_table[symt_idx];
@@ -237,10 +221,11 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
             _ => {}
         }
     }
-    for (idx, trampo_entry) in zip(glb_funcs, zip(trampo_entries, trampo_entries_2)) {
+    let plt_1_len = non_case_block_size * header.n_funcs;
+    for (i, idx) in glb_funcs.iter().enumerate() {
         // TODO
-        sym_table[idx].index1 = allocated_plt as usize + trampo_entry.0 + 1;
-        sym_table[idx].index2 = allocated_plt as usize + trampo_entry.1 + 1;
+        sym_table[*idx].index1 = allocated_plt as usize + non_case_block_size * i + 1;
+        sym_table[*idx].index2 = allocated_plt as usize + case_block_size * i + plt_1_len + 1;
     }
     Module {
         sym_table,
@@ -306,7 +291,7 @@ where
 /// case1:    
 ///     ldr r12, =lr_1
 ///     cmp lr, r12
-///     beq +4
+///     beq +2
 ///     b case2
 /// case1_body:
 ///     ldr r9, =obj2.static_base(const)
@@ -317,7 +302,7 @@ where
 /// case2:
 ///     ldr r12, =lr_2
 ///     cmp lr, r12
-///     beq +4
+///     beq +2
 ///     b case3   
 ///     ...
 /// case2_body:
@@ -325,22 +310,23 @@ where
 /// casen:
 ///     ldr r12, =lr_n
 ///     cmp lr r12
-///     beq +4
+///     beq +2
 ///     b case2
 /// casen_body:
 ///    ...
 /// default:
 ///     svc #0     
+///.word
+///     def_static_base
+///     func_entry
 ///
 /// svc handler includes:
 ///     1. extend plt
 ///         move default to new place
 ///         place new case in default's old place
-///     2. execute new case, return to lr (only lr is required)
-/// svc guarantees that stack and caller-saved register will remain intact
-///
-/// the requires argument:
-///     planA. s
+///     2. execute new case, return to lr
+/// call_static_base are determined from which range lr belongs to
+
 pub unsafe extern "C" fn svcall_handler(sp: *mut usize) {
     let lr = *sp.offset(5);
     let pc = *sp.offset(6);
@@ -354,7 +340,7 @@ pub unsafe extern "C" fn svcall_handler(sp: *mut usize) {
     let def_static_base = usize::from_le_bytes(*pc_ptr.offset(0).cast::<[u8; 4]>());
     let func_entry = usize::from_le_bytes(*pc_ptr.offset(4).cast::<[u8; 4]>());
     let mut call_static_base = 0;
-    for m in lr_range_to_base.iter() {
+    for m in LR_RANGE_TO_BASE.iter() {
         if m.contains(lr) {
             call_static_base = m.base();
             break;

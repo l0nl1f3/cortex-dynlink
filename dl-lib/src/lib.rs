@@ -21,7 +21,7 @@ use cortex_m_rt::entry;
 use cortex_m_semihosting::dbg;
 
 mod utils;
-use utils::{instr, module};
+use utils::module;
 // this is the allocator the application will use
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
@@ -39,7 +39,7 @@ impl Range {
         self.base
     }
 }
-static mut lr_range_to_base: Vec<Range> = vec![];
+static mut LR_RANGE_TO_BASE: Vec<Range> = vec![];
 
 fn init_heap() {
     let heap_start = cortex_m_rt::heap_start() as usize;
@@ -67,7 +67,7 @@ fn main() -> ! {
     let p_start = unsafe { &_binary_module_def_bin_start as *const u8 };
     let module_def = module::dl_load(p_start, None);
     unsafe {
-        lr_range_to_base.push(Range {
+        LR_RANGE_TO_BASE.push(Range {
             start: module_def.text_begin,
             end: module_def.text_end,
             base: module_def.got_begin,
@@ -76,7 +76,7 @@ fn main() -> ! {
     let p_start = unsafe { &_binary_module_call_bin_start as *const u8 };
     let module_call = module::dl_load(p_start, Some(vec![module_def.clone()]));
     unsafe {
-        lr_range_to_base.push(Range {
+        LR_RANGE_TO_BASE.push(Range {
             start: module_call.text_begin,
             end: module_call.text_end,
             base: module_call.got_begin,

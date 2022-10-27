@@ -1,5 +1,3 @@
-use cortex_m_semihosting::dbg;
-
 pub fn b_w(imm24: i32) -> [u8; 4] {
     let imm11 = ((imm24 >> 1) & 0x7ff) as u16;
     let imm11_h = (imm11 >> 8) as u8;
@@ -55,9 +53,6 @@ pub fn beq(imm: u8) -> [u8; 2] {
     [imm >> 1, 0xd0]
 }
 
-pub fn b(imm: u8) -> [u8; 2] {
-    [imm >> 1, 0xe0]
-}
 pub fn svc() -> [u8; 2] {
     [0x00, 0xdf]
 }
