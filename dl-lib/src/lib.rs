@@ -64,22 +64,30 @@ fn call_func_arg(func: fn(u32) -> u32, arg: u32) -> u32 {
 #[entry]
 fn main() -> ! {
     init_heap();
-    let p_start = unsafe { &_binary_module_def_bin_start as *const u8 };
-    let module_def = module::dl_load(p_start, None);
+    // alloc_all
+    // resolve_all
+    let p_start_def = unsafe { &_binary_module_def_bin_start as *const u8 };
+    let p_start_call = unsafe { &_binary_module_call_bin_start as *const u8 };
+    let module_def = module::allocate_module(p_start_def);
+    let module_call = module::allocate_module(p_start_call);
+    let module_def = module::dl_load(p_start_def, module_def.ptrs, None);
+    let module_call = module::dl_load(
+        p_start_call,
+        module_call.ptrs,
+        Some(vec![module_def.clone()]),
+    );
     unsafe {
         LR_RANGE_TO_BASE.push(Range {
             start: module_def.text_begin,
             end: module_def.text_end,
-            base: module_def.got_begin,
+            base: module_def.ptrs.got_begin,
         });
     }
-    let p_start = unsafe { &_binary_module_call_bin_start as *const u8 };
-    let module_call = module::dl_load(p_start, Some(vec![module_def.clone()]));
     unsafe {
         LR_RANGE_TO_BASE.push(Range {
             start: module_call.text_begin,
             end: module_call.text_end,
-            base: module_call.got_begin,
+            base: module_call.ptrs.got_begin,
         });
     }
     let entry = dl_entry_by_name(&module_call, "test");

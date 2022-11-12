@@ -55,15 +55,19 @@ fn parse_symtable(n_symbol: &usize, data: &Vec<u8>) -> Vec<Symbol> {
 }
 
 const HEADER_LEN: usize = mem::size_of::<ModuleHeader>();
-
+#[derive(Debug, Clone)]
+pub struct ModulePtr {
+    pub got_begin: usize,
+    pub plt_begin: usize,
+    pub data_begin: usize,
+}
 /// Loaded Module
 #[derive(Debug, Clone)]
 pub struct Module {
     pub sym_table: Vec<Symbol>,
     pub text_begin: usize,
     pub text_end: usize,
-    pub data_begin: usize,
-    pub got_begin: usize,
+    pub ptrs: ModulePtr,
 }
 
 impl Module {
@@ -116,6 +120,24 @@ fn generate_plt(func_entries: Vec<[u8; 4]>, block_size: usize, got_begin: usize)
     }
     plt
 }
+
+pub fn allocate_module(p_start: *const u8) -> Module {
+    let header = unsafe { &*(p_start as *const ModuleHeader) };
+    let case_block_size = 60;
+    let non_case_block_size = 20;
+    let ptrs = ModulePtr {
+        got_begin: malloc(header.n_reloc * 4, 4) as usize,
+        plt_begin: malloc(header.n_funcs * (case_block_size + non_case_block_size), 4) as usize,
+        data_begin: malloc(header.l_data, 4) as usize,
+    };
+    Module {
+        sym_table: Vec::new(),
+        text_begin: 0,
+        text_end: 0,
+        ptrs,
+    }
+}
+
 /// Given binary image and dependencies of loaded modules, load module from address p_start to p_end
 /// for external symbols, dependencies are assume to have their definition
 /// This function consist of the following steps
@@ -126,8 +148,8 @@ fn generate_plt(func_entries: Vec<[u8; 4]>, block_size: usize, got_begin: usize)
 ///
 ///  The procedure will place GOT, data section and trampoline codes (function indirections) in the RAM
 ///  Other codes won't be copied to the RAM
-pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module {
-    let header: ModuleHeader = unsafe { mem::transmute(*p_start.cast::<[u8; HEADER_LEN]>()) };
+pub fn dl_load(p_start: *const u8, ptrs: ModulePtr, dependencies: Option<Vec<Module>>) -> Module {
+    let header: &ModuleHeader = unsafe { &*(p_start as *const ModuleHeader) };
     let mut start = HEADER_LEN + p_start as usize;
     let relocs: Vec<_> = acquire_vec(&mut start, header.n_reloc as usize * 8)
         .chunks(8)
@@ -153,12 +175,11 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
     // trampoline code is a prefix of the text section and is of length 16 * (n_funcs + 1)
 
     // create GOT on RAM
-    let allocated_got_ptr = malloc(header.n_reloc * 4, 4);
-    let allocated_got = unsafe { slice::from_raw_parts_mut(allocated_got_ptr, header.n_reloc * 4) };
-    let got_begin = allocated_got_ptr as usize;
+    let allocated_got =
+        unsafe { slice::from_raw_parts_mut(ptrs.got_begin as *mut u8, header.n_reloc * 4) };
     // copy data section to RAM
-    let allocated_data_ptr = malloc(header.l_data, 4);
-    let allocated_data = unsafe { slice::from_raw_parts_mut(allocated_data_ptr, header.l_data) };
+    let allocated_data =
+        unsafe { slice::from_raw_parts_mut(ptrs.data_begin as *mut u8, header.l_data) };
     let data = acquire_vec(&mut start, header.l_data);
     allocated_data.copy_from_slice(&data);
 
@@ -173,14 +194,12 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
                 .collect::<Vec<_>>()
         },
         case_block_size,
-        got_begin,
+        ptrs.got_begin,
     );
-    let allocated_plt = malloc(plt.len(), 4);
+    let allocated_plt = ptrs.plt_begin as *mut u8;
     unsafe {
         slice::from_raw_parts_mut(allocated_plt, plt.len()).copy_from_slice(&plt);
     }
-
-    let data_begin = allocated_data_ptr as usize;
 
     for (offset, symt_idx) in relocs {
         let sym = &sym_table[symt_idx];
@@ -194,7 +213,7 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
                     + if sym.s_type > 4 {
                         text_begin
                     } else {
-                        data_begin
+                        ptrs.data_begin
                     };
                 let entry = entry.to_le_bytes();
                 for j in 0..4 {
@@ -231,8 +250,7 @@ pub fn dl_load(p_start: *const u8, dependencies: Option<Vec<Module>>) -> Module 
         sym_table,
         text_begin,
         text_end: text_begin + header.l_text,
-        data_begin,
-        got_begin,
+        ptrs,
     }
 }
 
@@ -251,7 +269,7 @@ where
     let offset = module.get_symbol(name).expect("Symbol not found").index1;
     let size_of = mem::size_of::<T>();
     unsafe {
-        let data_begin = module.data_begin as *const u8;
+        let data_begin = module.ptrs.data_begin as *const u8;
         let mut v: Vec<u8> = Vec::new();
         for j in 0..size_of {
             v.push(*data_begin.offset((offset + j) as isize));
@@ -331,12 +349,6 @@ pub unsafe extern "C" fn svcall_handler(sp: *mut usize) {
     let lr = *sp.offset(5);
     let pc = *sp.offset(6);
     let pc_ptr = pc as *const u8;
-    let mut case = vec![];
-    case.extend(instr::nop());
-    case.extend(instr::nop());
-    case.extend(instr::ldr(12, lr));
-    case.extend(instr::cmp_lr_r12());
-    case.extend(instr::beq(2));
     let def_static_base = usize::from_le_bytes(*pc_ptr.offset(0).cast::<[u8; 4]>());
     let func_entry = usize::from_le_bytes(*pc_ptr.offset(4).cast::<[u8; 4]>());
     let mut call_static_base = 0;
@@ -346,6 +358,12 @@ pub unsafe extern "C" fn svcall_handler(sp: *mut usize) {
             break;
         }
     }
+    let mut case = vec![];
+    case.extend(instr::nop());
+    case.extend(instr::nop());
+    case.extend(instr::ldr(12, lr));
+    case.extend(instr::cmp_lr_r12());
+    case.extend(instr::beq(2));
     let mut case_body = vec![];
     case_body.extend(instr::ldr(9, def_static_base));
     case_body.extend(instr::ldr(12, func_entry));
