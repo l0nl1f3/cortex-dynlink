@@ -60,13 +60,13 @@ pub struct ModulePtr {
     pub got_begin: usize,
     pub plt_begin: usize,
     pub data_begin: usize,
+    pub text_begin: usize,
+    pub text_end: usize,
 }
 /// Loaded Module
 #[derive(Debug, Clone)]
 pub struct Module {
     pub sym_table: Vec<Symbol>,
-    pub text_begin: usize,
-    pub text_end: usize,
     pub ptrs: ModulePtr,
 }
 
@@ -120,37 +120,47 @@ fn generate_plt(func_entries: Vec<[u8; 4]>, block_size: usize, got_begin: usize)
     }
     plt
 }
-
-pub fn allocate_module(p_start: *const u8) -> Module {
-    let header = unsafe { &*(p_start as *const ModuleHeader) };
-    let case_block_size = 60;
-    let non_case_block_size = 20;
-    let ptrs = ModulePtr {
-        got_begin: malloc(header.n_reloc * 4, 4) as usize,
-        plt_begin: malloc(header.n_funcs * (case_block_size + non_case_block_size), 4) as usize,
-        data_begin: malloc(header.l_data, 4) as usize,
-    };
-    Module {
-        sym_table: Vec::new(),
-        text_begin: 0,
-        text_end: 0,
-        ptrs,
-    }
-}
-
 /// Given binary image and dependencies of loaded modules, load module from address p_start to p_end
 /// for external symbols, dependencies are assume to have their definition
-/// This function consist of the following steps
+/// The allocate_module function consist of:
 /// 1. copy code section and data section to the heap and record both section address in the Module structure
+///
+/// After all modules are loaded the dl_load will do the following steps to resolve symbols
 /// 2. modify the trampolines to correct runtime addresses
 /// 3. apply function relocations
 /// 4. modify the entry in symbol table to redirect external function calls
 ///
 ///  The procedure will place GOT, data section and trampoline codes (function indirections) in the RAM
 ///  Other codes won't be copied to the RAM
-pub fn dl_load(p_start: *const u8, ptrs: ModulePtr, dependencies: Option<Vec<Module>>) -> Module {
-    let header: &ModuleHeader = unsafe { &*(p_start as *const ModuleHeader) };
+pub fn allocate_module(p_start: *const u8) -> Module {
+    let header = unsafe { &*(p_start as *const ModuleHeader) };
+    let case_block_size = 60;
+    let non_case_block_size = 20;
     let mut start = HEADER_LEN + p_start as usize;
+
+    let ptrs = ModulePtr {
+        got_begin: malloc(header.n_reloc * 4, 4) as usize,
+        plt_begin: malloc(header.n_funcs * (case_block_size + non_case_block_size), 4) as usize,
+        data_begin: malloc(header.l_data, 4) as usize,
+        text_begin: start,
+        text_end: start + header.l_text,
+    };
+
+    start += header.l_text;
+    let allocated_data =
+        unsafe { slice::from_raw_parts_mut(ptrs.data_begin as *mut u8, header.l_data) };
+    let data = acquire_vec(&mut start, header.l_data);
+    allocated_data.copy_from_slice(&data);
+
+    let raw_sym_table = acquire_vec(&mut start, header.l_symt);
+    let sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);
+    Module { sym_table, ptrs }
+}
+
+pub fn dl_load(p_start: *const u8, module: Module, dependencies: Option<Vec<Module>>) -> Module {
+    let header: &ModuleHeader = unsafe { &*(p_start as *const ModuleHeader) };
+    let mut start = HEADER_LEN + p_start as usize + header.l_text + header.l_data + header.l_symt;
+
     let relocs: Vec<_> = acquire_vec(&mut start, header.n_reloc as usize * 8)
         .chunks(8)
         .map(|slice| {
@@ -163,25 +173,9 @@ pub fn dl_load(p_start: *const u8, ptrs: ModulePtr, dependencies: Option<Vec<Mod
         .chunks(4)
         .map(|idx_slice| usize::from_le_bytes(idx_slice.try_into().unwrap()))
         .collect();
-    let raw_sym_table = acquire_vec(&mut start, header.l_symt);
-    let mut sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);
-    if start % 4 != 0 {
-        start += 4 - start % 4;
-    }
-    let text_begin = start;
-    let text_begin_ptr = start as *const u8;
-    start += header.l_text;
-    // extract trampoline code and copy to RAM
-    // trampoline code is a prefix of the text section and is of length 16 * (n_funcs + 1)
 
-    // create GOT on RAM
     let allocated_got =
-        unsafe { slice::from_raw_parts_mut(ptrs.got_begin as *mut u8, header.n_reloc * 4) };
-    // copy data section to RAM
-    let allocated_data =
-        unsafe { slice::from_raw_parts_mut(ptrs.data_begin as *mut u8, header.l_data) };
-    let data = acquire_vec(&mut start, header.l_data);
-    allocated_data.copy_from_slice(&data);
+        unsafe { slice::from_raw_parts_mut(module.ptrs.got_begin as *mut u8, header.n_reloc * 4) };
 
     // generate plt and copy to RAM
     let case_block_size = 60;
@@ -190,19 +184,20 @@ pub fn dl_load(p_start: *const u8, ptrs: ModulePtr, dependencies: Option<Vec<Mod
         {
             glb_funcs
                 .iter()
-                .map(|idx| (sym_table[*idx].index1 + text_begin).to_le_bytes())
+                .map(|idx| (module.sym_table[*idx].index1 + module.ptrs.text_begin).to_le_bytes())
                 .collect::<Vec<_>>()
         },
         case_block_size,
-        ptrs.got_begin,
+        module.ptrs.got_begin,
     );
-    let allocated_plt = ptrs.plt_begin as *mut u8;
+    let allocated_plt = module.ptrs.plt_begin as *mut u8;
     unsafe {
         slice::from_raw_parts_mut(allocated_plt, plt.len()).copy_from_slice(&plt);
     }
 
+    let text_begin_ptr = module.ptrs.text_begin as *mut u8;
     for (offset, symt_idx) in relocs {
-        let sym = &sym_table[symt_idx];
+        let sym = &module.sym_table[symt_idx];
         match sym.s_type & 3 {
             0 | 1 => {
                 // Exported / Local
@@ -211,9 +206,9 @@ pub fn dl_load(p_start: *const u8, ptrs: ModulePtr, dependencies: Option<Vec<Mod
                 });
                 let entry = sym.index1
                     + if sym.s_type > 4 {
-                        text_begin
+                        module.ptrs.text_begin
                     } else {
-                        ptrs.data_begin
+                        module.ptrs.data_begin
                     };
                 let entry = entry.to_le_bytes();
                 for j in 0..4 {
@@ -241,6 +236,7 @@ pub fn dl_load(p_start: *const u8, ptrs: ModulePtr, dependencies: Option<Vec<Mod
         }
     }
     let plt_1_len = non_case_block_size * header.n_funcs;
+    let mut sym_table = module.sym_table;
     for (i, idx) in glb_funcs.iter().enumerate() {
         // TODO
         sym_table[*idx].index1 = allocated_plt as usize + non_case_block_size * i + 1;
@@ -248,9 +244,7 @@ pub fn dl_load(p_start: *const u8, ptrs: ModulePtr, dependencies: Option<Vec<Mod
     }
     Module {
         sym_table,
-        text_begin,
-        text_end: text_begin + header.l_text,
-        ptrs,
+        ptrs: module.ptrs,
     }
 }
 

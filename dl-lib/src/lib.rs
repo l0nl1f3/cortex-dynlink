@@ -70,23 +70,19 @@ fn main() -> ! {
     let p_start_call = unsafe { &_binary_module_call_bin_start as *const u8 };
     let module_def = module::allocate_module(p_start_def);
     let module_call = module::allocate_module(p_start_call);
-    let module_def = module::dl_load(p_start_def, module_def.ptrs, None);
-    let module_call = module::dl_load(
-        p_start_call,
-        module_call.ptrs,
-        Some(vec![module_def.clone()]),
-    );
+    let module_def = module::dl_load(p_start_def, module_def, None);
+    let module_call = module::dl_load(p_start_call, module_call, Some(vec![module_def.clone()]));
     unsafe {
         LR_RANGE_TO_BASE.push(Range {
-            start: module_def.text_begin,
-            end: module_def.text_end,
+            start: module_def.ptrs.text_begin,
+            end: module_def.ptrs.text_end,
             base: module_def.ptrs.got_begin,
         });
     }
     unsafe {
         LR_RANGE_TO_BASE.push(Range {
-            start: module_call.text_begin,
-            end: module_call.text_end,
+            start: module_call.ptrs.text_begin,
+            end: module_call.ptrs.text_end,
             base: module_call.ptrs.got_begin,
         });
     }
