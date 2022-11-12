@@ -101,21 +101,20 @@ fn link_objects(objs: &Vec<String>, output: &str) {
 ///
 /// num_global_functions, num_relocs, raw_symbol_table_length
 /// code section length, data section length, bss section length, num_symbols
-/// func1's index in symbol table
-/// func2's index in symbol table
-/// ...
-/// Relocation table (functions)
-///     reloc1 offset, reloc1 index in symbol table
-///     reloc2 offset, reloc2 index in symbol table
-/// ...
+/// code section
+/// data section
 /// Symbol Table:
 ///     symbol1 index in flat symbol names, symbol1 address
 ///     symbol2 index in flat symbol names, symbol2 address
 /// ...
 /// flat symbol names = symbol1.name 0 symbol2.name 0 ...
-/// data section
-/// code section
-/// bss section
+/// Relocation table (functions)
+///     reloc1 offset, reloc1 index in symbol table
+///     reloc2 offset, reloc2 index in symbol table
+/// ...
+/// func1's index in symbol table
+/// func2's index in symbol table
+/// ...
 ///
 fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn Error>> {
     let bin_data = fs::read(obj)?;
@@ -202,27 +201,8 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     image.extend(&bss_section.len().to_le_bytes()[0..4]);
     image.extend(&sym_names.len().to_le_bytes()[0..4]);
 
-    // Write Relocation table
-    image.extend(
-        vec_relocations
-            .iter()
-            .flat_map(|reloc| {
-                let mut reloc_entry: Vec<u8> = Vec::new();
-                // address to .word
-                reloc_entry.extend(&reloc.r_offset.to_le_bytes()[0..4]);
-                reloc_entry.extend(&sym_table_idx[&reloc.name].to_le_bytes()[0..4]);
-                reloc_entry
-            })
-            .collect::<Vec<_>>(),
-    );
-
-    // Write every global function's index
-    image.extend(
-        glb_funcs
-            .iter()
-            .flat_map(|name| sym_table_idx.get(name).unwrap().to_le_bytes())
-            .collect::<Vec<_>>(),
-    );
+    image.extend(code_section);
+    image.extend(data_section);
 
     let mut flat_sym_names_len = 0;
     // Write Symbol table
@@ -264,12 +244,29 @@ fn make_image(obj: &String, glb_funcs: Vec<String>) -> Result<Vec<u8>, Box<dyn E
     );
 
     image.extend(flat_sym_names);
-    if (image.len() % 4) != 0 {
-        image.extend(vec![0; 4 - image.len() % 4]);
-    }
-    image.extend(code_section);
-    image.extend(data_section);
-    image.extend(bss_section);
+    // Write Relocation table
+    image.extend(
+        vec_relocations
+            .iter()
+            .flat_map(|reloc| {
+                let mut reloc_entry: Vec<u8> = Vec::new();
+                // address to .word
+                reloc_entry.extend(&reloc.r_offset.to_le_bytes()[0..4]);
+                reloc_entry.extend(&sym_table_idx[&reloc.name].to_le_bytes()[0..4]);
+                reloc_entry
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    // Write every global function's index
+    image.extend(
+        glb_funcs
+            .iter()
+            .flat_map(|name| sym_table_idx.get(name).unwrap().to_le_bytes())
+            .collect::<Vec<_>>(),
+    );
+    // strip .bss
+    // image.extend(bss_section);
     // Write image to specific file
 
     Ok(image)
