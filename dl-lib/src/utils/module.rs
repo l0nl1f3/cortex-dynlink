@@ -4,7 +4,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::{mem, slice};
 
 use super::{instr, template};
-use crate::{ALLOCATOR, LR_RANGE_TO_BASE};
+use crate::{Range, ALLOCATOR, LR_RANGE_TO_BASE};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -70,13 +70,6 @@ pub struct Module {
     pub ptrs: ModulePtr,
 }
 
-impl Module {
-    // search symbol by name
-    fn get_symbol(&self, name: &str) -> Option<&Symbol> {
-        self.sym_table.iter().find(|s| s.s_name == name)
-    }
-}
-
 /// given start address and length, extract the region [start, start + length) to a vector
 /// the assign start + length to start
 fn acquire_vec(start: &mut usize, length: usize) -> Vec<u8> {
@@ -120,184 +113,159 @@ fn generate_plt(func_entries: Vec<[u8; 4]>, block_size: usize, got_begin: usize)
     }
     plt
 }
-/// Given binary image and dependencies of loaded modules, load module from address p_start to p_end
-/// for external symbols, dependencies are assume to have their definition
-/// The allocate_module function consist of:
-/// 1. copy code section and data section to the heap and record both section address in the Module structure
-///
-/// After all modules are loaded the dl_load will do the following steps to resolve symbols
-/// 2. modify the trampolines to correct runtime addresses
-/// 3. apply function relocations
-/// 4. modify the entry in symbol table to redirect external function calls
-///
-///  The procedure will place GOT, data section and trampoline codes (function indirections) in the RAM
-///  Other codes won't be copied to the RAM
-pub fn allocate_module(p_start: *const u8) -> Module {
-    let header = unsafe { &*(p_start as *const ModuleHeader) };
-    let case_block_size = 60;
-    let non_case_block_size = 20;
-    let mut start = HEADER_LEN + p_start as usize;
 
-    let ptrs = ModulePtr {
-        got_begin: malloc(header.n_reloc * 4, 4) as usize,
-        plt_begin: malloc(header.n_funcs * (case_block_size + non_case_block_size), 4) as usize,
-        data_begin: malloc(header.l_data, 4) as usize,
-        text_begin: start,
-        text_end: start + header.l_text,
-    };
-
-    start += header.l_text;
-    let allocated_data =
-        unsafe { slice::from_raw_parts_mut(ptrs.data_begin as *mut u8, header.l_data) };
-    let data = acquire_vec(&mut start, header.l_data);
-    allocated_data.copy_from_slice(&data);
-
-    let raw_sym_table = acquire_vec(&mut start, header.l_symt);
-    let sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);
-    Module { sym_table, ptrs }
-}
-
-pub fn dl_load(p_start: *const u8, module: Module, dependencies: Option<Vec<Module>>) -> Module {
-    let header: &ModuleHeader = unsafe { &*(p_start as *const ModuleHeader) };
-    let mut start = HEADER_LEN + p_start as usize + header.l_text + header.l_data + header.l_symt;
-
-    let relocs: Vec<_> = acquire_vec(&mut start, header.n_reloc as usize * 8)
-        .chunks(8)
-        .map(|slice| {
-            let offset = usize::from_le_bytes(slice[0..4].try_into().unwrap());
-            let idx = usize::from_le_bytes(slice[4..8].try_into().unwrap());
-            (offset, idx)
-        })
-        .collect();
-    let glb_funcs: Vec<_> = acquire_vec(&mut start, header.n_funcs * 4)
-        .chunks(4)
-        .map(|idx_slice| usize::from_le_bytes(idx_slice.try_into().unwrap()))
-        .collect();
-
-    let allocated_got =
-        unsafe { slice::from_raw_parts_mut(module.ptrs.got_begin as *mut u8, header.n_reloc * 4) };
-
-    // generate plt and copy to RAM
-    let case_block_size = 60;
-    let non_case_block_size = 20;
-    let plt = generate_plt(
-        {
-            glb_funcs
-                .iter()
-                .map(|idx| (module.sym_table[*idx].index1 + module.ptrs.text_begin).to_le_bytes())
-                .collect::<Vec<_>>()
-        },
-        case_block_size,
-        module.ptrs.got_begin,
-    );
-    let allocated_plt = module.ptrs.plt_begin as *mut u8;
-    unsafe {
-        slice::from_raw_parts_mut(allocated_plt, plt.len()).copy_from_slice(&plt);
+impl Module {
+    // search symbol by name
+    fn get_symbol(&self, name: &str) -> Option<&Symbol> {
+        self.sym_table.iter().find(|s| s.s_name == name)
     }
+    /// allocate module according to the image header, use p_start to indicate the start address of the image
+    /// The allocated module will have everything prepared for symbol resolving
+    pub fn allocate(p_start: *const u8) -> Module {
+        let header = unsafe { &*(p_start as *const ModuleHeader) };
+        let case_block_size = 60;
+        let non_case_block_size = 20;
+        let mut start = HEADER_LEN + p_start as usize;
 
-    let text_begin_ptr = module.ptrs.text_begin as *mut u8;
-    for (offset, symt_idx) in relocs {
-        let sym = &module.sym_table[symt_idx];
-        match sym.s_type & 3 {
-            0 | 1 => {
-                // Exported / Local
-                let got_index = usize::from_le_bytes(unsafe {
-                    *text_begin_ptr.offset(offset as isize).cast::<[u8; 4]>()
-                });
-                let entry = sym.index1
-                    + if sym.s_type > 4 {
-                        module.ptrs.text_begin
-                    } else {
-                        module.ptrs.data_begin
-                    };
-                let entry = entry.to_le_bytes();
-                for j in 0..4 {
-                    allocated_got[got_index + j] = entry[j];
+        let ptrs = ModulePtr {
+            got_begin: malloc(header.n_reloc * 4, 4) as usize,
+            plt_begin: malloc(header.n_funcs * (case_block_size + non_case_block_size), 4) as usize,
+            data_begin: malloc(header.l_data, 4) as usize,
+            text_begin: start,
+            text_end: start + header.l_text,
+        };
+
+        start += header.l_text;
+        let allocated_data =
+            unsafe { slice::from_raw_parts_mut(ptrs.data_begin as *mut u8, header.l_data) };
+        let data = acquire_vec(&mut start, header.l_data);
+        allocated_data.copy_from_slice(&data);
+
+        let raw_sym_table = acquire_vec(&mut start, header.l_symt);
+        let sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);
+        unsafe {
+            LR_RANGE_TO_BASE.push(Range {
+                start: ptrs.text_begin,
+                end: ptrs.text_end,
+                base: ptrs.got_begin,
+            });
+        }
+        Module { sym_table, ptrs }
+    }
+    /// Use the relocation table and function indexes provided by image to resolve symbols references
+    /// The dependencies should include all the symbols' definitions
+    pub fn resolve(&mut self, p_start: *const u8, dependencies: Option<Vec<Module>>) {
+        let header: &ModuleHeader = unsafe { &*(p_start as *const ModuleHeader) };
+        let mut start =
+            HEADER_LEN + p_start as usize + header.l_text + header.l_data + header.l_symt;
+
+        let relocs: Vec<_> = acquire_vec(&mut start, header.n_reloc as usize * 8)
+            .chunks(8)
+            .map(|slice| {
+                let offset = usize::from_le_bytes(slice[0..4].try_into().unwrap());
+                let idx = usize::from_le_bytes(slice[4..8].try_into().unwrap());
+                (offset, idx)
+            })
+            .collect();
+        let glb_funcs: Vec<_> = acquire_vec(&mut start, header.n_funcs * 4)
+            .chunks(4)
+            .map(|idx_slice| usize::from_le_bytes(idx_slice.try_into().unwrap()))
+            .collect();
+
+        let allocated_got = unsafe {
+            slice::from_raw_parts_mut(self.ptrs.got_begin as *mut u8, header.n_reloc * 4)
+        };
+
+        // generate plt and copy to RAM
+        let case_block_size = 60;
+        let non_case_block_size = 20;
+        let plt = generate_plt(
+            {
+                glb_funcs
+                    .iter()
+                    .map(|idx| (self.sym_table[*idx].index1 + self.ptrs.text_begin).to_le_bytes())
+                    .collect::<Vec<_>>()
+            },
+            case_block_size,
+            self.ptrs.got_begin,
+        );
+        let allocated_plt = self.ptrs.plt_begin as *mut u8;
+        unsafe {
+            slice::from_raw_parts_mut(allocated_plt, plt.len()).copy_from_slice(&plt);
+        }
+
+        let text_begin_ptr = self.ptrs.text_begin as *mut u8;
+        for (offset, symt_idx) in relocs {
+            let sym = &self.sym_table[symt_idx];
+            match sym.s_type & 3 {
+                0 | 1 => {
+                    // Exported / Local
+                    let got_index = usize::from_le_bytes(unsafe {
+                        *text_begin_ptr.offset(offset as isize).cast::<[u8; 4]>()
+                    });
+                    let entry = sym.index1
+                        + if sym.s_type > 4 {
+                            self.ptrs.text_begin
+                        } else {
+                            self.ptrs.data_begin
+                        };
+                    let entry = entry.to_le_bytes();
+                    for j in 0..4 {
+                        allocated_got[got_index + j] = entry[j];
+                    }
                 }
-            }
-            2 => {
-                // External
-                if let Some(ref dependencies) = dependencies {
-                    for dependency in dependencies {
-                        let symbol = dependency.get_symbol(&sym.s_name);
-                        if let Some(symbol) = symbol {
-                            let entry = symbol.index2.to_le_bytes();
-                            let got_index = usize::from_le_bytes(unsafe {
-                                *text_begin_ptr.offset(offset as isize).cast::<[u8; 4]>()
-                            });
-                            for j in 0..4 {
-                                allocated_got[got_index + j] = entry[j];
+                2 => {
+                    // External
+                    if let Some(ref dependencies) = dependencies {
+                        for dependency in dependencies {
+                            let symbol = dependency.get_symbol(&sym.s_name);
+                            if let Some(symbol) = symbol {
+                                let entry = symbol.index2.to_le_bytes();
+                                let got_index = usize::from_le_bytes(unsafe {
+                                    *text_begin_ptr.offset(offset as isize).cast::<[u8; 4]>()
+                                });
+                                for j in 0..4 {
+                                    allocated_got[got_index + j] = entry[j];
+                                }
                             }
                         }
                     }
                 }
+                _ => {}
             }
-            _ => {}
+        }
+        let plt_1_len = non_case_block_size * header.n_funcs;
+        for (i, idx) in glb_funcs.iter().enumerate() {
+            self.sym_table[*idx].index1 = allocated_plt as usize + non_case_block_size * i + 1;
+            self.sym_table[*idx].index2 =
+                allocated_plt as usize + case_block_size * i + plt_1_len + 1;
         }
     }
-    let plt_1_len = non_case_block_size * header.n_funcs;
-    let mut sym_table = module.sym_table;
-    for (i, idx) in glb_funcs.iter().enumerate() {
-        // TODO
-        sym_table[*idx].index1 = allocated_plt as usize + non_case_block_size * i + 1;
-        sym_table[*idx].index2 = allocated_plt as usize + case_block_size * i + plt_1_len + 1;
+    pub fn entry_by_name(&self, name: &str) -> usize {
+        self.get_symbol(name).expect("Symbol not found").index1
     }
-    Module {
-        sym_table,
-        ptrs: module.ptrs,
-    }
-}
-
-/// Given symbol name and the module it belongs to, returns the entry address of function
-pub fn dl_entry_by_name(module: &Module, name: &str) -> usize {
-    module.get_symbol(name).expect("Symbol not found").index1
-}
-
-/// Given symbol name (whose type is T) and the module it belongs to
-/// given function to convert little-endian bytes to T
-/// return a copy to the symbol
-pub fn dl_val_by_name<T, F>(module: &Module, name: &str, bytes_to_t: F) -> T
-where
-    F: Fn(&[u8]) -> T,
-{
-    let offset = module.get_symbol(name).expect("Symbol not found").index1;
-    let size_of = mem::size_of::<T>();
-    unsafe {
-        let data_begin = module.ptrs.data_begin as *const u8;
-        let mut v: Vec<u8> = Vec::new();
-        for j in 0..size_of {
-            v.push(*data_begin.offset((offset + j) as isize));
+    /// Given symbol name (whose type is T) and the module it belongs to
+    /// given function to convert little-endian bytes to T
+    /// return a copy to the symbol
+    pub fn val_by_name<T, F>(&self, name: &str, bytes_to_t: F) -> T
+    where
+        F: Fn(&[u8]) -> T,
+    {
+        let offset = self.get_symbol(name).expect("Symbol not found").index1;
+        let size_of = mem::size_of::<T>();
+        unsafe {
+            let data_begin = self.ptrs.data_begin as *const u8;
+            let mut v: Vec<u8> = Vec::new();
+            for j in 0..size_of {
+                v.push(*data_begin.offset((offset + j) as isize));
+            }
+            bytes_to_t(&v)
         }
-        bytes_to_t(&v)
     }
 }
 
 /// Given sp of exception stack frame, extend the plt according to lr
 /// and return to lr
-/// Pseudocode of dynamic PLT:
-/// foo belongs to obj2
-/// .plt.foo
-///     switch lr
-///         case lr_1
-///             ldr r9, =obj2.static_base
-///             ldr r12, =foo.entry
-///             blx r12
-///             ldr r9, =obj?.static_base (call site)
-///             bx lr_1
-///     ...
-///         case lr_n
-///             ldr r9, =obj2.static_base
-///             ldr r12, =foo.entry
-///             blx r12
-///             ldr r9, =obj?.static_base (call site)
-///             bx lr_n
-///     ...
-///         default
-///             svc #0
-///  .plt.foo (compile time)
-///     switch lr
-///         default
-///             svc #0
 ///
 /// switch case assembly level
 /// case1:    
