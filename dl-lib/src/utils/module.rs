@@ -136,10 +136,9 @@ impl Module {
         };
 
         start += header.l_text;
-        let allocated_data =
-            unsafe { slice::from_raw_parts_mut(ptrs.data_begin as *mut u8, header.l_data) };
         let data = acquire_vec(&mut start, header.l_data);
-        allocated_data.copy_from_slice(&data);
+        unsafe { slice::from_raw_parts_mut(ptrs.data_begin as *mut u8, header.l_data) }
+            .copy_from_slice(&data);
 
         let raw_sym_table = acquire_vec(&mut start, header.l_symt);
         let sym_table = parse_symtable(&header.n_symbol, &raw_sym_table);
